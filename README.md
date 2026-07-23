@@ -1,117 +1,84 @@
-# Probabilistic Denoising-Enhanced and Parameterized Waveform Design for ISAC
+# Probabilistic Denoising-Enhanced ISAC for Stochastic Cluttered Mobile Environments
 
+This work is currently under review for publication in the IEEE Transactions on Wireless Communications.
+
+Reference implementation for **PDISAC** — a monostatic PMCW integrated sensing and communication (ISAC) framework for stochastic, cluttered, mobile environments.
+
+![image](figures/topology.png)
+---
 
 ## Abstract
 
-Integrated sensing and communication (ISAC) systems require carefully designed waveforms that simultaneously satisfy conflicting objectives: high range-Doppler resolution for sensing and high throughput for communication. However, conventional matched filtering relies on fixed waveform parameters, while learning-based ISAC methods lack theoretical performance guarantees. Both exhibit suboptimal performance under imperfect channel conditions and multi-target scenarios. This paper proposes a parameterized waveform design framework enhanced by probabilistic machine learning for ISAC systems. Our approach, termed Probabilistic Denoising ISAC (PDISAC), employs a lightweight probabilistic denoising network (PDNet) that generates high-quality range-Doppler heatmaps through adversarial training in the time-frequency domain. We analyze the impact of waveform sequence length on the sensing-communication trade-off and demonstrate that PDNet enhances target discriminability across varying sequence lengths. We derive closed-form analytical expressions for the Cramér-Rao lower bound (CRLB) and bit error rate (BER) to characterize fundamental performance limits under waveform constraints. Our map-based channel simulations demonstrate that PDISAC efficiently outperforms matched filtering and learning-based methods in terms of the CRLB at low SNR with reliable communication performance.
+We propose Probabilistic Denoising ISAC (PDISAC), a framework built on a **multi-bit slot-partitioned ISAC waveform**: by partitioning each maximal-length sequence into alternating pilot and data slots, we embed multiple bits per sequence through symbol-level spreading, multiplying the data rate while every chip retains the deterministic radar code. The added throughput, however, injects data-dependent, non-white sidelobes into the range-Doppler (RD) heatmap that degrade matched-filter (MF) sensing. Rather than modifying the MF receiver, we develop **RDPDNet**, a lightweight probabilistic denoising network inserted between RD-map formation and constant-false-alarm-rate (CA-CFAR) detection; trained with an **adversarial frequency-mixup (AFM)** mechanism, it suppresses the data-induced sidelobes and thermal noise without knowledge of the embedded symbols. We further characterize the statistics of the geometry-determined channel, and analyze the fundamental limits through a closed-form Cramér–Rao lower bound (CRLB), a semi-analytical bit error rate (BER), and an average capacity that tie the slot allocation and sequence length to the sensing–communication trade-off. Over a realistic urban geometry, RDPDNet absorbs most of the data-embedding sensing penalty and markedly lowers the RMSE at low SNR, while increasing the slot allocation raises the data rate at the cost of a higher BER — a tunable sensing–communication trade-off.
 
-## Setup
-
-This codebase is implemented in Python and Matlab and has been tested on macOS devices.
-
-* The Matlab code is used to simulate the data and evaluate the parameter estimation.
-* The Python code is used to train and test the proposed model as a preprocessing step for parameter estimation.
-
-The system pipeline is described in the figure below.
-
-![img](images/PDISAC.png)
-
-### Simulation Data
-
-The simulation data focus on the sensing data of the PDISAC waveform. The simulation code is located at
+## Repository layout
 
 ```
-matlab/eval/simul/sen_random_data.m
+PDISAC/
+├── simulation_matlab/   MATLAB: waveform + channel simulation, dataset generation, and evaluation
+│                        (main1 … main9b). See simulation_matlab/README.md
+├── alg_pdisac/          Python: RDPDNet + AFM training and the MATLAB↔Python inference bridge.
+│                        See alg_pdisac/README.md
+├── LICENSE
+└── README.md            (this file)
 ```
 
-The simulated data are saved at `source_dir = "path/to/data"`. The data include response sequences with noise and response sequences without noise.
+The two sides are coupled through files on disk: MATLAB writes the training dataset into `alg_pdisac/data/`, Python trains RDPDNet and writes a checkpoint into `alg_pdisac/exps/`, and MATLAB reads that checkpoint back through a Python inference bridge during evaluation.
 
+## Requirements
 
-### Training/Testing PDNet
+**MATLAB** (tested on R2022b+), with:
 
-After simulating the data, we need to change the configuration settings in the `ml/configs` folder. Change `root_dir='path/to/data/mats/freq/'`. Then set up the environment in `ml/config/ml.py`. After that, run:
+- Phased Array System Toolbox (`phased.Platform`, `physconst`)
+- Database Toolbox (`sqlite`, `sqlwrite`) — used to write the training dataset `.db`
+- Signal Processing / base MATLAB (`fft`, `cart2sph`, `exportgraphics`, `readtable`/`writetable`)
 
-```
-cd ml
-export PYTHONPATH=`pwd`
-pip install -r requirements.txt
-```
+**Python 3.13.14** (a conda environment is recommended), with the packages in
+[`alg_pdisac/requirements.txt`](alg_pdisac/requirements.txt):
 
-We compare the proposed method with another ML-based model (DnCNN). In the PDNet, we expand the experiment with the limit prior knowledge $\mathbf{P}_{\rm prbs}$, and the adversarial training process. Depending on the settings in `ml/config/ml.py`, we can run the training and testing processes as follows:
-
-```
-# Training DnCNN model: no AFM, no sounding
-python scripts/train/train_dncnn_y.py
-
-# Training DnCNN model: AFM, no sounding
-python scripts/train/train_dncnn_y_afm.py
-
-# Training DnCNN model: no AFM, sounding
-python scripts/train/train_dncnn_ys.py
-
-# Training DnCNN model: AFM, sounding
-python scripts/train/train_dncnn_ys_afm.py
-
-# Training PDNet model: no AFM, no sounding
-python scripts/train/train_pdnet_y.py
-
-# Training PDNet model: AFM, no sounding
-python scripts/train/train_pdnet_y_afm.py
-
-# Training PDNet model: no AFM, sounding
-python scripts/train/train_pdnet_ys.py
-
-# Training PDNet model: AFM, sounding
-python scripts/train/train_pdnet_ys_afm.py
-
-# Test DnCNN/PDNet model: no sounding
-python scripts/test/test_y.py
-
-# Test DnCNN/PDNet model: sounding
-python scripts/test/test_ys.py
+```bash
+conda create -n pdisac python=3.13.14 -y
+conda activate pdisac
+pip install -r alg_pdisac/requirements.txt
 ```
 
-After testing, we can run:
+## End-to-end pipeline
 
-```
-# Visualize the distribution of the denoising process
-python scripts/vis_dis.py
+The full pipeline is: **MATLAB generates data → Python trains RDPDNet → MATLAB evaluates**.
 
-# Visualize the RD heatmap of the data
-python scripts/vis_rd.py
-```
+**1. Generate the training dataset (MATLAB).**
+Run `generate_radar_dataset.m`; it writes `alg_pdisac/data/dataset_train.db`. For a quick end-to-end check, set the environment variable `PDISAC_SMOKE` first to write the small `dataset_smoke.db` instead.
 
-### Evaluation Parameter Estimation
-
-![img](images/RD_Comparation.png)
-
-We set up `matlab/eval/senest/` to estimate the range and velocity of the targets. Then go to `matlab/eval/visual` to visualize the evaluation results:
-
-```
-# Comparison of the CRLB of the proposed method
-vis_crlb.m 
-
-# Comparison of the NMSE of the proposed method
-vis_nmse.m 
-
-# Comparison of the MSE of the proposed method
-vis_nmse.m 
-
-# Comparison of the impact of sequence length of PDISAC waveform 
-vis_seq_length_impact.m 
+```matlab
+% in simulation_matlab/
+generate_radar_dataset          % → alg_pdisac/data/dataset_train.db
+% setenv('PDISAC_SMOKE','1'); generate_radar_dataset   % → dataset_smoke.db (quick)
 ```
 
-### Evaluation Data Transmission
+**2. Train RDPDNet (Python).**
+From `alg_pdisac/`, run the trainer. Real training reads `dataset_train.db`; setting `PDISAC_SMOKE=1` switches everything (dataset, epochs, folds, device) to the fast smoke configuration. The checkpoint is written to `exps/pdnet_afm/checkpoints/best_checkpoint.pth`.
 
-The data transmission is evaluated based on the BER and Capacity. At `matlab/eval/visual`, we run
-
+```bash
+cd alg_pdisac
+python -m scripts.train                 # real training  → dataset_train.db
+PDISAC_SMOKE=1 python -m scripts.train    # quick smoke     → dataset_smoke.db
 ```
-# Evaluate the BER performance 
-vis_ber.m 
 
-# Visualize the BER vs SNR vs Distance of UE
-vis_ber_distance_snr.m
+**3. Evaluate the pipeline (MATLAB).**
+Point `PDISAC_cfg.inference.python_executable` in `simulation_matlab/main1_matlab_config.m` at your Python environment, then run the ML-sensing evaluation. `main9`/`main9b` call the trained RDPDNet through the Python inference bridge and reproduce the sensing figures (RMSE vs SNR, bias significance, RD/AFM maps).
 
-# Visualize the Capacity vs SNR vs Distance of UE
-vis_capacity_distance_snr.m
+```matlab
+% in simulation_matlab/
+main9b_ml_sensing
 ```
+
+`PDISAC_SMOKE` is the single switch shared by MATLAB (dataset generation) and Python (training config), so one variable flips the whole pipeline between the full run and the smoke run.
+
+## Details
+
+- **MATLAB side** (waveform, channel, sensing/comm processing, analysis, dataset generation, evaluation): see [`simulation_matlab/README.md`](simulation_matlab/README.md).
+- **Python side** (RDPDNet + AFM, training/inference, configuration): see [`alg_pdisac/README.md`](alg_pdisac/README.md).
+
+## License
+
+See [`LICENSE`](LICENSE).

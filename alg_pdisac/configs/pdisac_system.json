@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "system": {
+    "carrier_hz": 7.7e10,
+    "bandwidth_hz": 1.5e8
+  },
+  "waveform": {
+    "chips": 512,
+    "blocks": 256
+  },
+  "scene": {
+    "roi_m": [[0.0, 100.0], [-100.0, 100.0], [0.0, 0.0]],
+    "max_ue_speed_mps": 20.0,
+    "max_target_speed_mps": 30.0
+  },
+  "machine_learning": {
+    "output_dir": "exps/pdnet_afm",
+    "n_records": null,
+    "num_bins": 1,
+    "batch_size": 4,
+    "num_workers": 1,
+    "pin_memory": false,
+    "device": "cuda",
+    "epochs": 200,
+    "learning_rate": 0.001,
+    "betas": [0.5, 0.999],
+    "folds": 5,
+    "hidden_channels": 16,
+    "latent_levels": 3,
+    "mask_weight": 0.1,
+    "reconstruction_weight": 1.0,
+    "kl_weight": 0.0001,
+    "dncnn_depth": 10,
+    "image_channels": 2,
+    "filters": 64,
+    "kernel_size": 3
+  },
+  "pdisac_dataset": {
+    "dataset_train": {
+      "output_db": "data/dataset_train.db"
+    }
+  },
+  "smoke": {
+    "db_path": "data/dataset_smoke.db",
+    "output_dir": "exps/smoke_test",
+    "epochs": 2,
+    "n_splits": 2,
+    "device": "cpu",
+    "num_workers": 0
+  }
+}
