@@ -1,10 +1,27 @@
-% SENSING_PROCESS  (consolidated Group 4: sensing processing)
+% MAIN4_SENSING_PROCESS  Conventional range-Doppler processing (Sec. III)
 % -------------------------------------------------------------------------
-% Matched filtering + range-Doppler map formation + static-clutter removal,
-% plus optional receiver / CA-CFAR+interpolation figures. The shared kernel helpers
-% stay standalone: func_ca_cfar_adaptive_threshold, func_sinc_interpolation.
-% Prerequisite: main3_signal_channel_model produced Data_Rx/Data_Tx (+ *_no_noise).
-% Suppress figures with NO_RADAR_PLOT / NO_CFAR_PLOT.
+% Prerequisite: main3_signal_channel_model has populated Data_Rx, Data_Tx,
+% Data_Rx_no_noise, Data_Tx_no_data and Data_Rx_no_data. Run as a script;
+% assumes a single Rx and Tx antenna (squeeze to N_chip x N_block).
+%
+% For each received signal: frequency-domain matched filter per block
+% (fast-time FFT, multiplication by the conjugate transmit spectrum), FFT over
+% the N_block blocks (slow time), zero-Doppler removal (bin 0 set to zero,
+% which removes the static scatterers), inverse FFT back to range, and an
+% fftshift centring Doppler at 0. Three complex RD maps are produced
+% (N_chip range bins x N_block Doppler bins):
+%   RD_map / RD_map_shifted                      noisy, with data
+%   RD_map_no_noise / RD_map_no_noise_shifted    noise-free, MLS only
+%   RD_map_noise_no_data / ..._shifted           noisy, MLS only
+%
+% Optional figures (set the flag to true before running to skip them):
+%   NO_RADAR_PLOT  received signal and MF output of the first blocks
+%   NO_CFAR_PLOT   CA-CFAR (func_ca_cfar_adaptive_threshold) on RD_map_shifted,
+%                  sinc sub-bin refinement (func_sinc_interpolation),
+%                  association with the true targets, console summary, and
+%                  export to fig_dir (default simulation_matlab/fig_exported):
+%                  fig_ca_cfar_interpolate_rd_map, fig_ca_cfar_est_vs_truth,
+%                  fig_ca_cfar_slices (.fig + .png)
 
 %----------------------------%
 % RD map with noise and data %
@@ -20,9 +37,9 @@ Tx_freq = fft(Tx_mat);                  % N_chip x N_block
 Data_Rx_cube_mf_freq = Rx_freq .* conj(Tx_freq); % frequency-domain MF product
 
 
-% FFT across the Slow-time dimension (N_block)
+% FFT across the slow-time dimension (N_block)
 Data_Rx_cube_mf_fft = fft(Data_Rx_cube_mf_freq, [], 2);
-Data_Rx_cube_mf_fft(:, 1) = 0; % Remove scatters because of its v = 0
+Data_Rx_cube_mf_fft(:, 1) = 0; % zero-Doppler removal (static scatterers, v = 0)
 RD_map = ifft(Data_Rx_cube_mf_fft, [], 1);   % (N_chip × N_block)
 RD_map_shifted = fftshift(RD_map, 2);% centre Doppler at 0
 
@@ -37,7 +54,7 @@ Tx_freq_no_data = fft(Tx_mat_no_data);    % N_chip x N_block
 
 Data_Rx_cube_mf_freq_no_noise = Rx_freq_no_noise .* conj(Tx_freq_no_data);
 Data_Rx_cube_mf_fft_no_noise = fft(Data_Rx_cube_mf_freq_no_noise, [], 2);
-Data_Rx_cube_mf_fft_no_noise(:, 1) = 0; % Remove scatters because of its v = 0
+Data_Rx_cube_mf_fft_no_noise(:, 1) = 0; % zero-Doppler removal
 RD_map_no_noise = ifft(Data_Rx_cube_mf_fft_no_noise, [], 1); % (N_chip × N_block)
 RD_map_no_noise_shifted = fftshift(RD_map_no_noise, 2); % centre Doppler at 0
 
@@ -49,7 +66,7 @@ Rx_freq_no_data = fft(Rx_mat_no_data);  % N_chip x N_block
 
 Data_Rx_cube_mf_freq_noise_no_data = Rx_freq_no_data .* conj(Tx_freq_no_data);
 Data_Rx_cube_mf_fft_noise_no_data = fft(Data_Rx_cube_mf_freq_noise_no_data, [], 2);
-Data_Rx_cube_mf_fft_noise_no_data(:, 1) = 0; % Remove scatterers because of its v = 0
+Data_Rx_cube_mf_fft_noise_no_data(:, 1) = 0; % zero-Doppler removal
 RD_map_noise_no_data = ifft(Data_Rx_cube_mf_fft_noise_no_data, [], 1);   % (N_chip × N_block)
 RD_map_noise_no_data_shifted = fftshift(RD_map_noise_no_data, 2); % centre Doppler at 0
 
@@ -60,8 +77,6 @@ if ~exist('NO_RADAR_PLOT','var') || ~NO_RADAR_PLOT
 %   Subplot 1 : Raw received signal  Data_Rx  (time domain, real part)
 %   Subplot 2 : Matched-filter output in time domain  ifft(Data_Rx_cube_mf_freq)  (real part)
 %   Subplot 3 : Absolute value of the MF output  |ifft(Data_Rx_cube_mf_freq)|
-
-
 
 %% ── Parameters ───────────────────────────────────────────────────────────────
 N_plot  = 2;                                    % number of blocks to display
@@ -148,7 +163,7 @@ end
 
 %% CA-CFAR + interpolation figure (optional) ---------------------------------
 if ~exist('NO_CFAR_PLOT','var') || ~NO_CFAR_PLOT
-% Three-panel CA-CFAR visualisation on the Range-Doppler map:
+% CA-CFAR detection and sinc refinement on the RD map, with three figures:
 %
 %   Figure 1 │ Panel 1: RD power heatmap              (dB, parula colormap)
 %            │ Panel 2: Adaptive CFAR threshold map   (dB, same style)
@@ -157,13 +172,10 @@ if ~exist('NO_CFAR_PLOT','var') || ~NO_CFAR_PLOT
 %            │ Panel 1: Range  scatter  (true vs estimated)
 %            │ Panel 2: Velocity scatter (true vs estimated)
 %            │ Panel 3: Per-target range & velocity errors (bar)
-%   Figure 3 │ 1-D range and Doppler slices at each detection (≤ 6 shown)
+%   Figure 3 │ 1-D range and Doppler slices at each detection (at most N_tars shown)
 %
 % Velocity sign convention: positive = target moving away from radar
-% xlim / ylim come from Region_of_interest.
-
-%% ── Run processing chain ─────────────────────────────────────────────────────
-
+% Plot limits come from Region_of_interest (main1_matlab_config).
 
 %% ── Physical axes ────────────────────────────────────────────────────────────
 range_res  = c / (2 * B);
@@ -172,22 +184,24 @@ range_axis = (0 : N_chip-1) * range_res;             % metres
 PRF      = 1 / T_pmcw;
 fd_axis  = (-N_block/2 : N_block/2-1) * (PRF / N_block);
 
-% NOTE: sign negated so that positive velocity = moving away from radar
-vel_axis = -(Lambda / 2) * fd_axis;                  % m/s  (flipped sign)
+% Sign negated so that positive velocity = moving away from radar
+% (channel Doppler f_D = -2 v_r / lambda)
+vel_axis = -(Lambda / 2) * fd_axis;                  % m/s
 
 %% ── ROI from configuration ───────────────────────────────────────────────────
-roi_range = Region_of_interest(1, :);   % [R_min  R_max]  metres
-roi_vel   = Region_of_interest(2, :);   % [V_min  V_max]  m/s
+roi_range = Region_of_interest(1, :);   % [R_min  R_max] m: x extent of the ROI
+roi_vel   = [-VEL_RANGE_TAR, VEL_RANGE_TAR];   % [V_min  V_max] m/s: maximum target speed (display and association only)
 
 range_mask = range_axis >= roi_range(1) & range_axis <= roi_range(2);
 
 %% ── CA-CFAR detection ────────────────────────────────────────────────────────
-N_guard_range   = 2;
-N_guard_doppler = 2;
-N_train_range   = 4;
-N_train_doppler = 4;
-P_fa            = 1e-3;
-peak_select     = true;
+% same detector settings as Sec. III and the statistics scripts (main1_matlab_config)
+N_guard_range   = PDISAC_cfg.sensing.cfar.guard_range;
+N_guard_doppler = PDISAC_cfg.sensing.cfar.guard_doppler;
+N_train_range   = PDISAC_cfg.sensing.cfar.training_range;
+N_train_doppler = PDISAC_cfg.sensing.cfar.training_doppler;
+P_fa            = PDISAC_cfg.sensing.cfar.false_alarm_probability;
+peak_select     = PDISAC_cfg.sensing.cfar.peak_select;
 
 
 
@@ -200,7 +214,7 @@ peak_select     = true;
 
 threshold_map(~range_mask, :) = NaN;
 
-%% ── Ground-truth: range & radial velocity ────────────────────────────────────
+%% ── Ground-truth: range & radial velocity (targets + UE) ─────────────────────
 truth_range = sqrt(sum((Tars_position - Tx_position).^2, 1)).';
 unit_vec    = (Tars_position - Tx_position) ./ ...
               (sqrt(sum((Tars_position - Tx_position).^2, 1)) + eps);
@@ -239,8 +253,6 @@ if K_det > 0
         err_v_vec(j)  = det_vel(assoc(j))   - truth_vel(j);
     end
 end
-
-%% ── Shared axis styling ──────────────────────────────────────────────────────
 
 %% ── Global LaTeX interpreter ─────────────────────────────────────────────────
 set(groot, 'defaultTextInterpreter',          'latex');
@@ -466,6 +478,10 @@ fprintf('    %-4s  %-12s  %-14s  %-12s  %-12s  %-14s  %-12s  %-10s  %-12s  %-10s
     'Power(dB)', 'Noise(dB)', 'SNR(dB)');
 
 for j = 1 : K_truth
+    if isnan(assoc(j))
+        fprintf('    T%-3d  %-12.4f  (no detection)\n', j, truth_range(j));
+        continue;
+    end
     r0 = detected_positions(assoc(j), 1);
     d0 = detected_positions(assoc(j), 2);
     pwr_truth   = RD_power_map(r0, d0);
@@ -486,7 +502,7 @@ for j = 1 : K_truth
         snr_truth);
 end
 fprintf('═══════════════════════════════\n\n');
-% ---- Export figures (.fig + .png) into fig_exported ----
+% ---- Export figures (.fig + .png) into fig_dir (main8_main sets it) ----
 if ~exist('fig_dir','var')
     fig_dir = fullfile(fileparts(mfilename('fullpath')), 'fig_exported');
 end
@@ -507,6 +523,7 @@ end
 % =========================================================================
 
 function style_ax(roi_vel, roi_range, cbar_label)
+    % STYLE_AX  Common RD-map axes style: parula colormap, colorbar, ROI limits.
     set(gca, 'YDir', 'normal');
     colormap(gca, parula);
     cb = colorbar;

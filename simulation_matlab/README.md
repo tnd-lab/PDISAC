@@ -1,90 +1,106 @@
-# PDISAC — MATLAB simulation and evaluation
+# PDISAC: MATLAB simulation and evaluation
 
-This folder contains the MATLAB side of PDISAC: it simulates the multi-bit slot-partitioned PMCW waveform and the geometry-based channel, runs the conventional sensing/communication receivers, generates the RDPDNet training dataset, and evaluates the trained model. The `main1`…`main9b` scripts form the pipeline; they run in the MATLAB **base workspace** and share variables (each `mainN` assumes the earlier stages have populated the workspace, except the standalone drivers noted below).
+This folder contains the MATLAB side of PDISAC. It simulates the multi-bit slot-partitioned PMCW waveform and the geometry-based channel, runs the conventional sensing and communication receivers, writes the training database of the denoisers, and produces the statistics and figures of the paper.
+
+The `main1`–`main4` and `main6` scripts run in the MATLAB base workspace and share variables. The analysis and figure drivers (`main5a`–`main5e`, `main7`, `channel_com`, `check_gamma_gof`) build their own scenes and run on their own.
 
 ## Requirements
 
 - MATLAB R2022b or newer.
-- **Phased Array System Toolbox** — `phased.Platform` (target/UE motion), `physconst`.
-- **Database Toolbox** — `sqlite`, `sqlwrite` (writing the training `.db` for Python).
-- Base MATLAB / Signal Processing — `fft`, `cart2sph`, `exportgraphics`, `readtable`/`writetable`.
+- Phased Array System Toolbox: `phased.Platform` (target and UE motion), `physconst`.
+- Statistics and Machine Learning Toolbox: distribution fits of `check_gamma_gof`.
+- Database Toolbox: `sqlite` (training database for Python).
+- For the learned denoisers: the Python 3.13.14 environment `afm` of `alg_pdisac/` (see [`../alg_pdisac/README.md`](../alg_pdisac/README.md)) and trained checkpoints.
 
-## Configuration — `main1_matlab_config.m`
+## Configuration: `main1_matlab_config.m`
 
-Single-file configuration, sourced by every other script (`main1_matlab_config;`). It defines the raw system/RF, waveform, scene, and CA-CFAR settings, derives all constants, and exposes profile handles (`dataset_*_cfg`, `*_statistics_cfg`, `PDISAC_cfg.inference`). Key blocks:
+Single configuration file, sourced by every other script. It defines the raw settings, derives all constants and exposes the profile handles `dataset_*_cfg` and `*_statistics_cfg`.
 
-- **Waveform**: `chips` (`N_chip`), `blocks` (`N_prbs`), `symbols_per_block` (`N_bit^prbs`).
-- **Scene**: ROI, moving targets, stationary scatterers, RCS ranges, speeds.
-- **Dataset profiles**: `dataset_train` / `dataset_smoke` output paths (into `alg_pdisac/data/`).
-- **RDPDNet inference bridge** (`PDISAC_cfg.inference.*`): `python_executable`, `checkpoint`, `device`, `batch_size`. **Set `python_executable` to your Python environment** before running `main9`/`main9b`.
+- **System and waveform**: carrier, bandwidth, `chips` (`N_chip`), `blocks` (`N_prbs`), `symbols_per_block` (`N_bit^prbs`).
+- **Scene**: ROI, UE, targets, number of scatterers, RCS ranges, maximum speeds, `communication_reflectors` (`N_tars^ref`).
+- **CA-CFAR**: guard and training half-widths, nominal false-alarm probability `P_fa^nom`, peak selection.
+- **Dataset profiles**: `dataset_train`, `dataset_test`, `dataset_smoke` (written into `alg_pdisac/data/`); the test profile also sets the scene of `main5d_fig_maps` and `main5e_fig_dist`.
+- **Statistics profiles**: scenes, Monte Carlo runs, SNR grids and scene sizes of the analysis drivers.
+- **Denoiser bridge**: `PDISAC_cfg.inference.python_executable`, the first existing interpreter of the conda environment `afm` in a list of common install paths; add yours to `py_candidates` if it is elsewhere. Models, checkpoints, device and batch size are set in `alg_pdisac/configs/inference.json`.
 
-## Pipeline: `main1` → `main9b`
+The system values shared with Python (carrier, bandwidth, chips, blocks, ROI, maximum speeds) must equal those of `alg_pdisac/configs/pdisac_system.json`.
 
-| Script | Role |
-|---|---|
-| `main1_matlab_config.m` | Configuration (system/RF, waveform, scene, CFAR, dataset + inference bridge). Sourced by all others. |
-| `main2_topology.m` | Builds the scene — UE, moving targets, stationary scatterers — and an optional 2-D plan view. |
-| `main3_signal_channel_model.m` | Builds the transmit ISAC waveform and propagates it through the sensing and communication channels to form the received matrices. |
-| `main4_sensing_process.m` | Matched filtering, RD-map formation, and static-clutter (zero-Doppler) removal; optional CA-CFAR + sinc-interpolation figures. |
-| `main5_sensing_analysis.m` | Sensing RMSE vs SNR against the bias-adjusted CRLB (MLE + CA-CFAR pipeline). Writes `exported_statistics/statistics_sensing_biased_crlb.csv`. |
-| `main5b_sensing_analysis.m` | Waveform-parameter sweeps — range/velocity RMSE vs `N_chip`/`N_prbs`. Writes `statistics_sensing_sweep_nchip.csv` / `_nprbs.csv`. |
-| `main6_comm_process.m` | Communication decoding — delay estimation, pilot-slot channel estimation, BPSK demodulation. |
-| `main7_comm_analysis.m` | BER and ensemble-average capacity analysis. Writes `exported_statistics/statistics_communication.csv`. |
-| `main8_main.m` | End-to-end driver: aggregates the exported statistics into the paper's result figures (communication BER/capacity, sensing sweeps, channel distribution). |
-| `main9_ml_sensing.m` | ML-sensing comparison — RDPDNet-denoised vs conventional RD maps (calls the Python inference bridge). |
-| `main9b_ml_sensing.m` | Data-embedded vs data-free RD maps through RDPDNet, with an acceptance gate; produces the central sensing figures (RMSE vs SNR, bias significance) plus RD/AFM-mask visualizations. |
+## Scripts
 
-**Standalone entry points** (not part of the `main1`→`main9b` chain):
+**Single-scene pipeline**
 
 | Script | Role |
 |---|---|
-| `generate_radar_dataset.m` | Generates the RDPDNet training dataset `alg_pdisac/data/dataset_train.db` (or `dataset_smoke.db` when `PDISAC_SMOKE` is set). |
-| `channel_com.m` | Channel LOS/NLOS distribution statistics → `exported_statistics/statistics_channel.mat` (consumed by `main8` Step 6b). |
+| `main1_matlab_config.m` | Configuration. |
+| `main2_topology.m` | Scene: UE, moving targets, static scatterers; plan view `fig_topology`. |
+| `main3_signal_channel_model.m` | ISAC waveform (MLS with pilot and data slots) and the sensing and communication channels (band-limited fractional delays). |
+| `main4_sensing_process.m` | Matched filter, RD map, zero-Doppler removal; optional CA-CFAR and interpolation figures. |
+| `main6_comm_process.m` | UE receiver: delay estimation, pilot-slot channel estimation, BPSK detection. |
+| `main8_main.m` | Runs the pipeline (STEP 1–5), renders the result figures from `exported_statistics/` (STEP 6a–6g) and writes the table of RMSE sweeps `exported_statistics/table_rmse_sweep.csv` (STEP 6h). |
 
-**Helper functions** (called by the above): `func_ana_crlb_rv`, `func_bpsk_mod`/`func_bpsk_demod`, `func_ca_cfar_adaptive_threshold`, `func_generate_static_scatterers`, `func_get_array_response`, `func_get_x_delay`, `func_mle_estimation`, `func_sinc_interpolation`, `h_sen_tars`.
+**Analysis drivers** (write `exported_statistics/`)
 
-## Link to the Python code (`alg_pdisac/`)
-
-The MATLAB and Python sides are coupled through files on disk, in two places.
-
-**1. Dataset generation (MATLAB → Python).**
-`generate_radar_dataset.m` writes the SQLite dataset that the Python trainer reads:
-
-```matlab
-generate_radar_dataset                       % → alg_pdisac/data/dataset_train.db
-setenv('PDISAC_SMOKE','1'); generate_radar_dataset   % → alg_pdisac/data/dataset_smoke.db
-```
-
-`PDISAC_SMOKE` is the same environment variable the Python side uses, so it flips both dataset generation and training between the full and smoke configurations.
-
-**2. Inference bridge (Python → MATLAB).**
-During evaluation, `main9`/`main9b` call the trained RDPDNet through three thin MATLAB wrappers that launch the Python inference scripts (using `PDISAC_cfg.inference.python_executable` and `PDISAC_cfg.inference.checkpoint`):
-
-| MATLAB wrapper | launches (in `alg_pdisac/scripts/`) | purpose |
+| Script | Output | Used by `main8_main` |
 |---|---|---|
-| `inference_run_pdnet.m` | `inference_pdnet_mat.py` | denoise an RD map (or a batch) with RDPDNet |
-| `inference_run_pdnet_mask.m` | `inference_pdnet_mask_mat.py` | rebuild the AFM adversarial mask |
-| `inference_run_pdnet_distribution.m` | `distribution_pdnet_mat.py` | export the latent-distribution hierarchy for visualization |
+| `main5a_sensing_sweep.m` | `statistics_sensing_sweep_nchip.csv`, `statistics_sensing_sweep_nprbs.csv` | STEP 6c, 6h |
+| `main5b_detection_vs_nbit.m` | `statistics_detection_vs_nbit_ml.csv`, `statistics_detection_vs_nbit_ml_roc.csv` | STEP 6e |
+| `main5c_bcrb_check.m` | `statistics_bcrb_check<tag>.csv` (runs below) | STEP 6f, 6g, 6h |
+| `main7_comm_analysis.m` | `statistics_communication.csv` | STEP 6a |
+| `channel_com.m` | `statistics_channel.mat`, `statistics_channel_summary.csv` | STEP 6b |
+| `check_gamma_gof.m` | `statistics_gamma_gof.mat`, `statistics_gamma_gof.csv` | STEP 6d |
 
-The checkpoint the bridge reads (`PDISAC_cfg.inference.checkpoint`, default `alg_pdisac/exps/pdnet_afm/checkpoints/best_checkpoint.pth`) is the one written by `python -m scripts.train`.
+`main5b_detection_vs_nbit.m` appends `_ml` when `USE_DENOISER = true` (default); `main8_main` reads the file without `_ml` when the `_ml` file is absent.
+
+`main5c_bcrb_check.m` builds the output tag from its flags. The runs read by `main8_main`:
+
+| Run | Flags | File |
+|---|---|---|
+| conventional, sinc | `READOUT = "sinc"`, `LS_CANCEL = true`, `USE_DENOISER = false` | `statistics_bcrb_check_ls.csv` |
+| conventional, Dirichlet | `READOUT = "dirichlet"`, `LS_CANCEL = true`, `USE_DENOISER = false` | `statistics_bcrb_check_dirichlet_ls.csv` |
+| learned denoisers | `READOUT = "dirichlet"`, `LS_CANCEL = true`, `USE_DENOISER = true` (default) | `statistics_bcrb_check_dirichlet_ls_ml.csv` |
+| RMSE vs `N_bit^prbs` | defaults, `for NBIT_EXT = [4 16 64 128], main5c_bcrb_check; end` (denoisers off) | `statistics_bcrb_check_dirichlet_ls_nbit<N>.csv` |
+
+**Figure drivers** (call the Python denoisers, write `fig_exported/`)
+
+| Script | Figures |
+|---|---|
+| `main5d_fig_maps.m` | RD maps of one test scene (with data, with LS cancellation, without data, clean), the maps denoised by RDPDNet and DnCNN with and without AFM, and the AFM masks and mixed map. |
+| `main5e_fig_dist.m` | Distributions of RDPDNet on the same scene: encoder chain and inference chain. |
+
+**Dataset and bridge**
+
+| Script | Role |
+|---|---|
+| `generate_radar_dataset.m` | Writes `alg_pdisac/data/dataset_train.db` (`dataset_test.db` with `DATASET = 'test'`, `dataset_smoke.db` with `SMOKE = true` or `PDISAC_SMOKE`): the RD map `Z_rd`, a second realisation `Z_rd_alt` of the same scene (AFM), the clean map `Z_rd_prbs` and the target truth. |
+| `inference_run_pdnet.m` | Denoises RD maps with the models of `alg_pdisac/configs/inference.json` (launches `alg_pdisac/scripts/infer/denoise_mat.py`). |
+
+**Helper functions**: `func_bpsk_mod`, `func_bpsk_demod`, `func_ca_cfar_adaptive_threshold`, `func_frac_shift`, `func_generate_static_scatterers`, `func_get_array_response`, `func_get_x_delay_frac`, `func_mi_bpsk`, `func_sinc_interpolation`, `h_sen_tars`.
 
 ## Typical order
 
 ```matlab
-% 1) generate the dataset for Python training
+% 1) training database
 generate_radar_dataset
 
-% 2) train RDPDNet in Python (see alg_pdisac/README.md), then
+% 2) train the denoisers in Python (alg_pdisac/README.md)
 
-% 3) run the analyses / evaluation
-main5_sensing_analysis      % sensing RMSE vs CRLB
-main5b_sensing_analysis     % sensing RMSE vs CRLB
-main7_comm_analysis         % BER + capacity
-main8_main                  % aggregate result figures
-main9b_ml_sensing           % RDPDNet-denoised vs conventional sensing
+% 3) statistics
+main5a_sensing_sweep          % RMSE vs N_chip, N_prbs
+main5b_detection_vs_nbit      % P_fa, P_d, ROC
+main5c_bcrb_check             % RMSE vs BCRB: the runs of the table above
+main7_comm_analysis           % BER and achievable rate
+channel_com                   % LOS / NLOS channel distribution
+check_gamma_gof               % goodness of fit of the NLOS power
+
+% 4) figures
+main5d_fig_maps               % RD maps, denoised maps, AFM
+main5e_fig_dist               % RDPDNet distributions
+main8_main                    % pipeline figures, result figures, table of RMSE sweeps
 ```
+
+To run `main8_main` without the plots of the single-scene pipeline, define the flags before the call, e.g. `NO_SIGNAL_PLOT = true; NO_RADAR_PLOT = true; NO_CFAR_PLOT = true; NO_BPSK_PLOT = true; TOPO_NO_PLOT = true; main8_main`; `NO_RESULT_PLOTS = true` skips STEP 6.
 
 ## Outputs
 
-- `exported_statistics/` — CSV/MAT statistics consumed by `main8_main.m`.
-- `fig_exported/` — figures (`.fig`/`.png`) produced by the analysis scripts.
+- `exported_statistics/`: CSV and MAT statistics read by `main8_main.m` (not tracked by git).
+- `fig_exported/`: figures of all scripts (not tracked by git).

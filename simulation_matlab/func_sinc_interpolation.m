@@ -1,15 +1,29 @@
 function [det_range_interp, det_vel_interp] = func_sinc_interpolation( ...
         RD_map_complex, detected_positions, range_axis, vel_axis, N_sinc, N_fine)
-%FUNC_SINC_INTERPOLATION  Sub-bin refinement via Whittaker-Shannon sinc.
+%FUNC_SINC_INTERPOLATION  Sub-bin range/velocity refinement of CA-CFAR detections.
+%
+%   [det_range_interp, det_vel_interp] = FUNC_SINC_INTERPOLATION( ...
+%       RD_map_complex, detected_positions, range_axis, vel_axis)
+%   [...] = FUNC_SINC_INTERPOLATION(..., N_sinc, N_fine)
+%
+%   For each detection, the complex RD map is reconstructed on a fine grid
+%   within +-0.5 bin of the detected cell by Whittaker-Shannon (sinc)
+%   interpolation over a window of +-N_sinc bins, separately along range and
+%   Doppler; the refined position is the maximum of the reconstructed
+%   magnitude, mapped to physical units through range_axis / vel_axis.
 %
 % Inputs
-% ──────
-%  RD_map_complex      (N_range x N_doppler)  COMPLEX RD map (not magnitude)
+%  RD_map_complex      (N_range x N_doppler)  complex RD map (not magnitude),
+%                                             Doppler axis fftshift-ed
 %  detected_positions  (K x 2)                [range_bin, doppler_bin]
-%  range_axis          (1 x N_range)           physical range   [m]
-%  vel_axis            (1 x N_doppler)         physical velocity [m/s]
-%  N_sinc              half-width of sinc window in bins (default 16)
-%  N_fine              sub-grid points per half-bin search interval (default 128)
+%  range_axis          (1 x N_range)          physical range    [m]
+%  vel_axis            (1 x N_doppler)        physical velocity [m/s]
+%  N_sinc              half-width of the sinc window in bins (default 16)
+%  N_fine              fine-grid points per half-bin (default 128)
+%
+% Outputs
+%  det_range_interp    (K x 1)  refined range    [m]
+%  det_vel_interp      (K x 1)  refined velocity [m/s]
 
     if nargin < 5 || isempty(N_sinc), N_sinc = 16;  end
     if nargin < 6 || isempty(N_fine), N_fine = 128; end
@@ -35,7 +49,7 @@ function [det_range_interp, det_vel_interp] = func_sinc_interpolation( ...
         % Search the local sub-bin interval around the detected peak.
         f_range    = linspace(r - 0.5, r + 0.5, 2*N_fine + 1);
 
-        % sinc matrix: W x (2*N_fine+1), sinc is even so sign does not matter
+        % sinc matrix: W x (2*N_fine+1); sinc is even, so the sign of the argument does not matter
         sinc_mat_r = sinc(r_win(:) - f_range);
 
         % Reconstruct complex signal at fine grid, then take magnitude
@@ -52,11 +66,12 @@ function [det_range_interp, det_vel_interp] = func_sinc_interpolation( ...
         d_hi  = min(N_doppler, d + N_sinc);
         d_win = d_lo : d_hi;
 
-        Z_dop      = RD_map_complex(r, d_win);      % complex (1 x W)
+        Z_dop      = RD_map_complex(r, d_win) .* ...
+                     exp(1j*pi*(N_doppler-1)*(d_win - N_doppler/2 - 1)/N_doppler);   % remove the linear phase of the slow-time DFT kernel
 
         f_dop      = linspace(d - 0.5, d + 0.5, 2*N_fine + 1);
 
-        sinc_mat_d = sinc(d_win(:) - f_dop);        % (W x N_fine)
+        sinc_mat_d = sinc(d_win(:) - f_dop);        % (W x (2*N_fine+1))
 
         X_fine_d   = abs(Z_dop * sinc_mat_d);
 

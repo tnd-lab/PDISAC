@@ -4,8 +4,8 @@ All settings live in configs/pdisac_system.json (single source of truth).
 Real training uses the machine_learning defaults; set the PDISAC_SMOKE
 environment variable to apply the fast smoke-test overrides:
 
-    python -m scripts.train                  # real training  (dataset_train.db)
-    PDISAC_SMOKE=1 python -m scripts.train    # quick smoke test (dataset_smoke.db)
+    python -m scripts.train.train_pdnet_afm                  # real training  (dataset_train.db)
+    PDISAC_SMOKE=1 python -m scripts.train.train_pdnet_afm    # quick smoke test (dataset_smoke.db)
 
 PDISAC_SMOKE is the same switch the MATLAB dataset generator uses, so one
 variable flips the whole pipeline between train and smoke. Paths inside the
@@ -47,6 +47,12 @@ cfg = {
     "kls_thresh": _ml["kl_weight"], "depth": _ml["dncnn_depth"],
     "img_channels": _ml["image_channels"], "n_filters": _ml["filters"],
     "kernel_size": _ml["kernel_size"],
+    # training protocol shared by the four scripts of scripts/train/
+    "folds_run": _ml.get("folds_run", 1),
+    "kl_warmup_epochs": _ml.get("kl_warmup_epochs", 10),
+    "lambda_rec": _ml.get("target_weight", 1.0),
+    "lambda_inf": _ml.get("inference_weight", 1.0),
+    "target_loss": _ml.get("target_loss", "rel"),
 }
 
 # Single switch: PDISAC_SMOKE applies the fast smoke-test overrides

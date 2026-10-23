@@ -5,12 +5,17 @@ import sqlite3
 
 import numpy as np
 import pandas as pd
-from configs.isac import N_block, N_chip
+from configs.isac import N_block, N_chip, range_resolution, vel_axis
 
 
-def decompress_matrix(b64_str, n_rows=N_chip, n_cols=N_block):
-    """Invert MATLAB compressMatrix: base64 -> gunzip -> float32 -> complex64 column-major."""
-    floats = np.frombuffer(gzip.decompress(base64.b64decode(b64_str)), dtype=np.float32)
+def decompress_matrix(blob, n_rows=N_chip, n_cols=N_block):
+    """Invert MATLAB generate_radar_dataset: gunzip -> float32 -> complex64 column-major.
+
+    Accepts the BLOB (bytes) written by the current generator and, for older
+    databases, the base64 text of the previous format; both are lossless.
+    """
+    raw = bytes(blob) if isinstance(blob, (bytes, bytearray, memoryview)) else base64.b64decode(blob)
+    floats = np.frombuffer(gzip.decompress(raw), dtype=np.float32)
     n_el = n_rows * n_cols
     return (
         floats[:n_el].reshape(n_rows, n_cols, order="F")
@@ -76,7 +81,7 @@ def load_radar_results(db_file="dataset_train.db", n_records=None):
 
     df.drop(columns=["RD_map_compressed", "RD_map_no_noise_compressed"], inplace=True)
 
-    return df
+    return attach_target_truth(df, db_file)
 
 
 if __name__ == "__main__":
@@ -108,3 +113,45 @@ if __name__ == "__main__":
 
     plot_rd(P_rd_no_noise[0])
     plot_rd(P_rd_no_noise[1])
+
+
+# --------------------------------------------------------------------------- #
+#  Target-support mask M_tars (training only; not used at inference)
+# --------------------------------------------------------------------------- #
+# Half-width (bins) of the mainlobe of a target response in the RD map: no range or
+# Doppler window, so the first nulls lie 1 bin from the true position and every
+# mainlobe cell is within +-1 bin of the rounded true cell (independent of CA-CFAR).
+MAINLOBE_HALF_WIDTH = 1
+
+
+def attach_target_truth(df, db_file):
+    """Column 'truth': array [[range_m, vel_mps], ...] of the targets of each scene (table 'targets')."""
+    with sqlite3.connect(db_file) as conn:
+        tg = pd.read_sql_query("SELECT RAN_Index, True_Range_m, True_Vel_mps FROM targets", conn)
+    truth = {k: g[["True_Range_m", "True_Vel_mps"]].to_numpy() for k, g in tg.groupby("RAN_Index")}
+    empty = np.zeros((0, 2))
+    df["truth"] = [truth.get(k, empty) for k in df["RAN_Index"]]
+    return df
+
+
+def target_support_mask(Z_prbs, truth, w=MAINLOBE_HALF_WIDTH):
+    """
+    M_tars (2, N_chip, N_block) in [0,1] (manuscript IV-C): the clean RD power
+    P = |Z_prbs|^2 is normalized per target over its mainlobe, so that every target
+    peak maps to unity and all cells outside the target mainlobes to zero.
+    Z_prbs: (2, N_chip, N_block) real/imag clean map;  truth: [[range_m, vel_mps], ...].
+    Cells: k = round(r / range_resolution), d = argmin |vel_axis - v| (as in main5b).
+    """
+    P = Z_prbs[0] ** 2 + Z_prbs[1] ** 2
+    M = np.zeros_like(P)
+    d0 = int(np.argmin(np.abs(vel_axis)))                  # removed zero-Doppler column
+    for r, v in np.asarray(truth).reshape(-1, 2):
+        k = int(round(r / range_resolution))
+        d = int(np.argmin(np.abs(vel_axis - v)))
+        if d == d0 or k < 0 or k >= P.shape[0]:
+            continue                                        # not visible in the RD map
+        box = (slice(max(0, k - w), k + w + 1), slice(max(0, d - w), d + w + 1))
+        peak = P[box].max()
+        if peak > 0:
+            M[box] = np.maximum(M[box], P[box] / peak)
+    return np.stack([M, M]).astype(np.float32)

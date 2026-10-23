@@ -1,3 +1,37 @@
+% CHANNEL_COM  Distribution of the LOS / NLOS communication channel samples.
+%
+%   Monte-Carlo sweep of the geometry-based communication channel (Sec. II):
+%   for each random UE realisation, N_bit^prbs value (symbols_per_block), SNR_Tx
+%   and Monte-Carlo trial, a new scene is drawn (N_tars moving targets plus the
+%   UE as an extra target, N_scats static scatterers), main3_signal_channel_model
+%   is run,
+%   and the per-block channel coefficients are collected:
+%     LOS      h_com_los  (H_com_los_all)
+%     NLOS     sum over the N_ref_tars reflectors closest to the UE
+%              (H_com_nlos_all summed over its 4th dimension)
+%     Overall  LOS + NLOS
+%   N_block+1 samples are stored per trial.
+%
+%   Settings: channel_statistics_cfg of main1_matlab_config (random_scenes,
+%   monte_carlo, symbols_per_block, snr_db, fixed_targets = N_tars, scatterers =
+%   N_scats; gains in system_override) and scene.communication_reflectors =
+%   N_ref_tars.
+%   NO_SIGNAL_PLOT = true suppresses the main3 figure inside the sweep.
+%
+%   Outputs (paths relative to this script's folder):
+%     exported_statistics/statistics_channel.mat          channel samples
+%         (los/nlos/overall_channel_all), their powers in dB, trial_summary
+%         and the sweep settings; read by main8_main STEP 6b
+%     exported_statistics/statistics_channel_summary.csv  trial_summary
+%         (mean LOS / NLOS / overall power in dB per trial)
+%     fig_exported/fig_com_channel_distribution_v2.fig / .png
+%         PDFs of the channel power (dB)
+%     fig_exported/fig_com_channel_raw_distribution_v2.fig / .png
+%         PDFs of the real and imaginary parts
+%
+%   Dependencies: main1_matlab_config, main3_signal_channel_model,
+%   func_generate_static_scatterers. Run standalone.
+
 clear; clc; close all;
 
 script_dir = fileparts(mfilename('fullpath'));
@@ -7,6 +41,7 @@ addpath(script_dir);
 %  SHARED CONFIGURATION AND CHANNEL STATISTICS SETTINGS
 % =====================================================================
 main1_matlab_config;
+NO_SIGNAL_PLOT = true;   % main3 is called in every trial; skip its transmit-signal figure
 G_tx_db = channel_statistics_cfg.system_override.gain_tx_db;
 G_rx_db = channel_statistics_cfg.system_override.gain_rx_db;
 G_ue_db = channel_statistics_cfg.system_override.gain_ue_db;
@@ -48,9 +83,9 @@ for idx_ran = 1:N_ran
 
     N_ue        = 1;
     UE_position = rand_pos_in_roi(Region_of_interest, N_ue);
-    UE_vel      = VEL_RANGE_UE * (2*randn(3, N_ue) - 1);
+    UE_vel      = VEL_RANGE_UE * (2*rand(3, N_ue) - 1);
     UE_vel(3)   = 0;
-    UE_rcs      = 10.^( (10*log10(10) + (10*log10(20)-10*log10(10))*randn(1)) / 10 );
+    UE_rcs      = 10.^( (10*log10(10) + (10*log10(20)-10*log10(10))*rand(1)) / 10 );   % log-uniform on [10, 20] m^2
 
     Rel_positions  = UE_position - Tx_position;
     [~, ~, Range_Tx_UE] = cart2sph(Rel_positions(1), Rel_positions(2), Rel_positions(3));
@@ -80,12 +115,13 @@ for idx_ran = 1:N_ran
             % ============================================================
             for idx_mc = 1:Mc
 
-                N_tars        = 5;
+                % moving targets (RCS log-uniform on [10, 20] m^2); the UE is appended as the last target
+                N_tars        = channel_statistics_cfg.fixed_targets;
                 Tars_position = rand_pos_in_roi(Region_of_interest, N_tars);
-                Tars_vel      = VEL_RANGE_TAR * (2*randn(3, N_tars) - 1);
+                Tars_vel      = VEL_RANGE_TAR * (2*rand(3, N_tars) - 1);
                 Tars_vel(3,:) = 0;
                 Tars_rcs      = 10.^( (10*log10(10) + ...
-                                       (10*log10(20)-10*log10(10))*randn(1, N_tars)) / 10 );
+                                       (10*log10(20)-10*log10(10))*rand(1, N_tars)) / 10 );
 
                 N_tars        = N_tars + 1;
                 Tars_position = [Tars_position, UE_position];
@@ -99,18 +135,19 @@ for idx_ran = 1:N_ran
                     'InitialPosition', UE_position, ...
                     'Velocity',        UE_vel);
 
-                N_scats        = 20;
+                % static scatterers (RCS log-uniform on [5, 10] m^2)
+                N_scats        = channel_statistics_cfg.scatterers;
                 Scats_position = func_generate_static_scatterers(N_scats, Region_of_interest);
                 Scats_vel      = zeros(size(Scats_position));
                 Scats_rcs      = 10.^( (10*log10(5) + ...
-                                        (10*log10(10)-10*log10(5))*randn(1, N_scats)) / 10 );
+                                        (10*log10(10)-10*log10(5))*rand(1, N_scats)) / 10 );
                 Scats_motion   = phased.Platform( ...
                     'InitialPosition', Scats_position, ...
                     'Velocity',        Scats_vel);
 
-                N_ref_tars = 10;
+                N_ref_tars = PDISAC_cfg.scene.communication_reflectors;   % reflectors kept in the NLOS channel (closest to the UE), as in main7_comm_analysis
 
-                main3_signal_channel_model;
+                main3_signal_channel_model;   % populates H_com_los_all, H_com_nlos_all
                 
                 H_los = squeeze(H_com_los_all);
                 H_nlos_total = squeeze(sum(H_com_nlos_all, 4));
@@ -245,7 +282,7 @@ function pos = rand_pos_in_roi(roi, N)
         if lo == hi
             pos(dim,:) = lo;
         else
-            pos(dim,:) = lo + (hi - lo) .* randn(1, N);
+            pos(dim,:) = lo + (hi - lo) .* rand(1, N);
         end
     end
 end

@@ -7,7 +7,32 @@ from torch.utils.data import Dataset, DataLoader, Subset
 from sklearn.model_selection import GroupKFold
 from typing import Optional
 import pandas as pd
-from utils.utils import convert_from_complex
+from data.read_data import target_support_mask
+from utils.utils import (
+    convert_to_db,
+    convert_from_db,
+    convert_to_complex,
+    convert_from_complex,
+)
+
+def convert_from_rd_to_powerdb(Z_rd: Tensor, dim: int = 0) -> Tensor:
+    Z_rd = convert_from_complex(Z_rd, dim=dim)
+
+    if isinstance(Z_rd, torch.Tensor):
+        P_rd = torch.abs(Z_rd) ** 2
+    elif isinstance(Z_rd, np.ndarray):
+        P_rd = np.abs(Z_rd) ** 2
+
+    return convert_to_db(P_rd)
+
+
+def convert_from_powerdb_to_rd(P_rd: Tensor, dim: int = 0) -> Tensor:
+    P_rd = convert_from_db(P_rd)
+    if isinstance(P_rd, torch.Tensor):
+        Z_rd = torch.sqrt(P_rd)
+    elif isinstance(P_rd, np.ndarray):
+        Z_rd = np.sqrt(P_rd)
+    return convert_to_complex(Z_rd, dim=dim)
 
 
 def normalize_rd(Z_rd, eps=1e-8):
@@ -21,12 +46,14 @@ def normalize_rd(Z_rd, eps=1e-8):
 
 class RDMapDataset(Dataset):
     """
-    Paired (noisy, clean) RD map dataset for denoising.
+    (noisy, clean, target support) RD map dataset for denoising: items are
+    (Z_rd, Z_rd_prbs, M_tars), M_tars from data/read_data.target_support_mask.
 
     Args:
-        P_rd : (N, 2, H, W) float32
-        P_rd_prbs : (N, 2, H, W) float32
-        gids     : (N,)  RAN_Index values — used for GroupKFold
+        P_rd      : (N, 2, H, W) float32 normalised noisy maps
+        P_rd_prbs : (N, 2, H, W) float32 normalised clean maps
+        gids      : (N,)  RAN_Index values — used for GroupKFold
+        truth     : N lists [[range_m, vel_mps], ...] of the target truth
     """
 
     def __init__(
@@ -34,8 +61,10 @@ class RDMapDataset(Dataset):
         P_rd: np.ndarray,
         P_rd_prbs: np.ndarray,
         gids: np.ndarray,
+        truth: list,
     ):
-        assert len(P_rd) == len(P_rd_prbs) == len(gids)
+        assert len(P_rd) == len(P_rd_prbs) == len(gids) == len(truth)
+        self.truth = truth                              # per-sample [[range_m, vel_mps], ...]
         self.P_rd = P_rd
         self.P_rd_prbs = P_rd_prbs
         self.gids = gids
@@ -68,15 +97,16 @@ class RDMapDataset(Dataset):
 
         gids = df["RAN_Index"].to_numpy()
 
-        return cls(P_rd, P_rd_prbs, gids)
+        return cls(P_rd, P_rd_prbs, gids, list(df["truth"]))
 
     def __len__(self) -> int:
         return len(self.gids)
 
-    def __getitem__(self, idx: int) -> tuple[Tensor, Tensor]:
+    def __getitem__(self, idx: int) -> tuple[Tensor, Tensor, Tensor]:
         return (
             torch.from_numpy(self.P_rd[idx]),
             torch.from_numpy(self.P_rd_prbs[idx]),
+            torch.from_numpy(target_support_mask(self.P_rd_prbs[idx], self.truth[idx])),   # M_tars
         )
 
     @property
@@ -96,8 +126,8 @@ class RDMapDataloader:
     Usage:
         loader = RDMapDataloader(df, n_splits=5, batch_size=32)
         for train_loader, val_loader in loader.get_fold_dataloaders():
-            for P_rd, P_rd_prbs in train_loader:
-                # P_rd, P_rd_prbs : (B, 2, H, W) float32
+            for P_rd, P_rd_prbs, M_tars in train_loader:
+                # each (B, 2, H, W) float32
                 ...
 
     Args:
@@ -142,7 +172,7 @@ class RDMapDataloader:
         """
         Returns [(train_loader, val_loader), ...] — one pair per fold.
 
-        Each loader yields (P_rd, P_rd_prbs) batches of shape (B, 2, H, W).
+        Each loader yields (P_rd, P_rd_prbs, M_tars) batches, each (B, 2, H, W).
         """
         fold_loaders = []
 
@@ -185,7 +215,7 @@ if __name__ == "__main__":
     for fold_idx, (train_loader, val_loader) in enumerate(
         loader.get_fold_dataloaders()
     ):
-        P_rd, P_rd_prbs = next(iter(train_loader))
+        P_rd, P_rd_prbs, M_tars = next(iter(train_loader))
         print(
             f"  Fold {fold_idx + 1} | "
             f"noisy: {tuple(P_rd.shape)} | "

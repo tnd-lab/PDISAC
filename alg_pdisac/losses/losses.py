@@ -127,7 +127,7 @@ class MSELoss(nn.Module):
     Args:
         loss_weight (float): Loss weight for MSE loss. Default: 1.0.
         reduction (str): Specifies the reduction to apply to the output.
-            Supported choices are 'none' | 'mean' | 'sum'. Default: 'sum'.
+            Supported choices are 'none' | 'mean' | 'sum'. Default: 'mean'.
     """
 
     def __init__(self, loss_weight=1.0, reduction="mean"):
@@ -142,3 +142,34 @@ class MSELoss(nn.Module):
 
     def forward(self, pred, target):
         return self.loss_weight * mse_loss(pred, target, reduction=self.reduction)
+
+
+def target_nmse(pred, target, M_tars, eps=1e-8):
+    """
+    Target-support term of eq_L_rec, ||M_tars * (pred - target)||_F^2, normalized per
+    sample by the target energy ||M_tars * target||_F^2 and averaged over the batch.
+    The normalisation keeps the ~50 target cells of a 2x512x256 map from being
+    negligible next to the global term.  Dimensionless, O(1), like the global term.
+    """
+    num = (M_tars * (pred - target)).pow(2).flatten(1).sum(1)
+    den = (M_tars * target).pow(2).flatten(1).sum(1).clamp_min(eps)
+    return (num / den).mean()
+
+
+def target_rel_mse(pred, target, M_tars, eps=1e-6):
+    """
+    Target-support term of eq_L_rec normalized PER CELL by the clean power of that cell:
+        sum_cells M * |pred - target|^2 / (|target|^2 + eps)  /  sum_cells M ,
+    with |.|^2 = I^2 + Q^2 over the two channels and M = M_tars (same on both channels).
+    Since M_tars = P / P_peak,m inside the box of target m, each term is about
+    |pred - target|^2 / P_peak,m: every target is weighted by its OWN peak, so erasing a
+    weak target costs as much as erasing the strongest one.  target_nmse instead divides
+    by the summed energy of all targets of the map, which the strongest target dominates.
+    Averaged over the batch; dimensionless, O(1).
+    """
+    P = target.pow(2).sum(1, keepdim=True)              # |Z_prbs|^2 per cell
+    err = (pred - target).pow(2).sum(1, keepdim=True)   # |Zhat - Z_prbs|^2 per cell
+    M = M_tars[:, :1]
+    num = (M * err / (P + eps)).flatten(1).sum(1)
+    den = M.flatten(1).sum(1).clamp_min(1.0)
+    return (num / den).mean()

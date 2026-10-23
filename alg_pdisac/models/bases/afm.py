@@ -1,7 +1,8 @@
 """
-MaskNet: Adversarial Frequency Mask Generator for Range-Doppler Heatmaps
-=========================================================================
-Implements f_mask(Z_rd; Phi_mask) -> M_mask in [0,1]^{2 x N_chip x N_block}
+MaskNet: adversary f_mask of the adversarial frequency mixup (AFM), Sec. IV-C
+============================================================================
+Implements M_mask = f_mask([Z_rd_hat, Z_rd_alt - Z_rd]; Phi_mask) in [0,1]^{2 x N_chip x N_block}
+(eq_M_afm; the training scripts build MaskNet with in_ch = 4 and multiply by 1 - M_tars).
 
 Key constraint: the zero-Doppler column (vel = 0) carries a strong DC /
 static-clutter component visible as a bright vertical stripe in P_rd.
@@ -9,8 +10,8 @@ The mask MUST suppress this column so the adversarial mixup never distorts it.
 
 IMPORTANT — vel_axis alignment
   The zero-Doppler bin is at  argmin(|vel_axis|),  which equals N_block // 2
-  ONLY when vel_axis is perfectly symmetric.  MaskNet and ZeroDopplerBias
-  accept a `vel_axis` array and derive v0 from it, mirroring plot_rd():
+  ONLY when vel_axis is perfectly symmetric.  MaskNet takes vel_axis from
+  configs.isac and derives v0 from it, as plot_rd() in utils/plots.py:
 
       zero_idx = np.argmin(np.abs(vel_axis))        # same as plot_rd
       gate[:, zero_idx : zero_idx + 2] = 0          # 2-col wide, same as plot
@@ -239,13 +240,13 @@ class DecoderBlock(nn.Module):
 
 class MaskNet(nn.Module):
     """
-    f_mask(Z_rd; Phi_mask) -> M_mask in [0,1]^{B x 2 x N_chip x N_block}
+    f_mask(X; Phi_mask) -> M_mask in [0,1]^{B x 2 x N_chip x N_block}
 
     Zero-Doppler constraint
     -----------------------
     The zero-Doppler bin is located at
 
-        v0 = argmin(|vel_axis|)          # mirrors your plot_rd() logic exactly
+        v0 = argmin(|vel_axis|)          # as plot_rd() in utils/plots.py
 
     which is NOT necessarily N_block // 2 for asymmetric velocity axes.
 
@@ -259,14 +260,13 @@ class MaskNet(nn.Module):
 
     Args
     ----
-    vel_axis : 1-D array of Doppler velocities, length N_block.
-               Accepts numpy ndarray or torch.Tensor.
-               n_block = len(vel_axis) and v0 = argmin(|vel_axis|) are both
-               derived from this — no need to pass them separately.
-    n_chip   : range bins (N_chip from configs.isac, default)
-    in_ch    : input channels (default 2: real + imag)
+    n_chip   : range bins (default N_chip of configs.isac)
+    n_block  : Doppler bins (default N_block of configs.isac)
+    in_ch    : input channels (default 2: real + imag of one map; the AFM training
+               uses 4: [Z_rd_hat, Z_rd_alt - Z_rd])
     base_ch  : feature-map width at first encoder stage (default 16)
     depth    : number of encoder/decoder stages (default 3)
+    v0 = argmin(|vel_axis|) is taken from vel_axis of configs.isac.
     """
 
     def __init__(self,
@@ -293,7 +293,7 @@ class MaskNet(nn.Module):
         # ── Doppler positional encoding (centred at true v0) ─────────────────
         self.dpe = DopplerPositionalEncoding(n_block, v0=v0, out_ch=1)
 
-        # Input: 2 complex channels + 1 positional channel
+        # Input: in_ch map channels + 1 positional channel
         first_in = in_ch + 1
 
         # ── Channel sizes ────────────────────────────────────────────────────
@@ -339,7 +339,7 @@ class MaskNet(nn.Module):
         """
         Parameters
         ----------
-        Z_rd : (B, 2, N_chip, N_block)   noisy or denoised RD map
+        Z_rd : (B, in_ch, N_chip, N_block)   input maps (AFM: [Z_rd_hat, Z_rd_alt - Z_rd])
 
         Returns
         -------

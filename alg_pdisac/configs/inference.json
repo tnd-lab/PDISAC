@@ -1,0 +1,11 @@
+{
+  "description": "Denoisers used by the MATLAB simulations (scripts/infer/*_mat.py) and by scripts/test/*.py. name: chain label (letters, digits, _); version: pdnet (RDPDNet, models/bases/pdnet.py) or dncnn; checkpoint: relative to alg_pdisac (written by scripts/train/train_<model>_<afm|no_afm>.py). A missing checkpoint is skipped with a warning unless the model is requested by name.",
+  "device": "auto",
+  "batch_size": 8,
+  "models": [
+    {"name": "pdnet",        "version": "pdnet", "checkpoint": "exps/pdnet_afm/fold_1/checkpoints/best_checkpoint.pth"},
+    {"name": "pdnet_noafm",  "version": "pdnet", "checkpoint": "exps/pdnet_no_afm/fold_1/checkpoints/best_checkpoint.pth"},
+    {"name": "dncnn",        "version": "dncnn", "checkpoint": "exps/dncnn_afm/fold_1/checkpoints/best_checkpoint.pth"},
+    {"name": "dncnn_noafm",  "version": "dncnn", "checkpoint": "exps/dncnn_no_afm/fold_1/checkpoints/best_checkpoint.pth"}
+  ]
+}

@@ -67,42 +67,61 @@ class DenoiseModel(nn.Module):
         return distributions
 
 
-def count_parameters(model):
-    """Count the number of trainable parameters in a model"""
-    return sum(p.numel() for p in model.parameters() if p.requires_grad)
+def count_parameters(model, inputs=None):
+    """Number of trainable parameters.
+
+    inputs = None : all parameters of the model (RDPDNet: encoder + extractor + decoder).
+    inputs = dict : only the parameters of the modules executed by model.predict(**inputs),
+                    i.e. the run-time network (RDPDNet: extractor + decoder; the encoder is
+                    used in training only). Shared parameters are counted once.
+    """
+    if inputs is None:
+        return sum(p.numel() for p in model.parameters() if p.requires_grad)
+    used, handles = set(), []
+    for m in model.modules():
+        handles.append(m.register_forward_hook(lambda mod, inp, out: used.add(mod)))
+    model.eval()
+    with torch.no_grad():
+        model.predict(**inputs)
+    for hdl in handles:
+        hdl.remove()
+    params = {id(p): p for m in used for p in m.parameters(recurse=False) if p.requires_grad}
+    return sum(p.numel() for p in params.values())
+
+
+def synchronize(device):
+    """Wait for the queued kernels of an accelerator (asynchronous on CUDA and MPS)."""
+    dev = torch.device(device).type
+    if dev == "cuda":
+        torch.cuda.synchronize()
+    elif dev == "mps":
+        torch.mps.synchronize()
 
 
 def measure_inference_time(model, inputs, num_runs=100, warmup=10, device="cpu"):
-    """Measure average inference time"""
+    """Median wall time of one model.predict(**inputs) call [ms] on `device`.
+
+    The batch is whatever `inputs` holds (time per frame = result / batch size).
+    The device is synchronized before and after every timed call, since CUDA and MPS
+    kernels run asynchronously.
+    """
     model.eval()
     model.to(device)
-
-    # Move inputs to device
     inputs = {
         k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in inputs.items()
     }
-
-    # Warmup
-    with torch.no_grad():
+    times = []
+    with torch.inference_mode():
         for _ in range(warmup):
-            _ = model.predict(**inputs)
-
-    # Timing
-    if device == "cuda":
-        torch.cuda.synchronize()
-
-    start_time = time.time()
-    with torch.no_grad():
+            model.predict(**inputs)
         for _ in range(num_runs):
-            _ = model.predict(**inputs)
-
-    if device == "cuda":
-        torch.cuda.synchronize()
-
-    end_time = time.time()
-    avg_time = (end_time - start_time) / num_runs * 1000  # Convert to ms
-
-    return avg_time
+            synchronize(device)
+            t0 = time.perf_counter()
+            model.predict(**inputs)
+            synchronize(device)
+            times.append(time.perf_counter() - t0)
+    times.sort()
+    return 1000 * times[len(times) // 2]
 
 
 def get_model_size_mb(model):
@@ -117,7 +136,7 @@ def count_flops(model, inputs):
     """Count the forward-pass MACs/FLOPs of one frame (batch = 1) via hooks.
 
     Convention: 1 MAC = 1 multiply + 1 add, so FLOPs = 2 x MACs, the standard
-    used in the complexity table (Table II). Only Conv2d, ConvTranspose2d, and
+    used in the complexity table. Only Conv2d, ConvTranspose2d, and
     Linear layers are counted; they dominate the cost, while BatchNorm and
     activations are negligible. All layers here use stride 1, so the
     output-based MAC formula is exact.
@@ -160,7 +179,7 @@ def count_flops(model, inputs):
 
 
 if __name__ == "__main__":
-    device = "mps"
+    device = "cuda"
     print(f"Using device: {device}\n")
 
     c, h, w = (2, 512, 256)
@@ -232,9 +251,8 @@ if __name__ == "__main__":
     # -----------------------------------------------------------------
     #  Table II — per-frame complexity, params, FLOPs/frame, latency
     #  (manuscript tab_complexity, input 2 x N_chip x N_prbs = 2x512x256).
-    #  The MF + CA-CFAR baseline has no learnable parameters; its FLOPs and
-    #  latency are measured on the MATLAB side (main4/main9), so they are
-    #  shown as "--" here for a 1:1 correspondence with the paper table.
+    #  The MF + CA-CFAR baseline has no learnable parameters; the complete
+    #  table (all chains on one device) is scripts/test/complexity_table.py.
     # -----------------------------------------------------------------
     print("\n" + "=" * 92)
     print(f"TABLE II  —  Per-frame complexity  (input {c} x {h} x {w}, batch size 1)")

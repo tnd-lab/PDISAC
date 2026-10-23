@@ -1,10 +1,30 @@
 function array = func_get_array_response(N_ant, d, azi, ele, lambda, position, is_bbe_pattern)
-    % azi: 1 x N_azi vector (degrees)
-    % ele: 1 x N_ele vector (degrees)
-    % Output: N_ant x (N_azi * N_ele)
+%FUNC_GET_ARRAY_RESPONSE  Steering vectors of a y-axis ULA with optional back baffle.
+%
+%   array = FUNC_GET_ARRAY_RESPONSE(N_ant, d, azi, ele, lambda, position)
+%   array = FUNC_GET_ARRAY_RESPONSE(..., is_bbe_pattern)
+%
+%   a(u) = g(u) * exp(j*k*p_n^T u), k = 2*pi/lambda, with element positions
+%   p_n on a ULA along the y axis centred at 'position', and direction
+%   u = [sin(ele)cos(azi); sin(ele)sin(azi); cos(ele)].
+%
+% Inputs
+%   N_ant          : number of elements
+%   d              : element spacing [m]
+%   azi            : 1 x N_azi azimuth angles [deg]
+%   ele            : 1 x N_ele polar angles from the z axis [deg]
+%                    (callers pass 90 - elevation)
+%   lambda         : wavelength [m]
+%   position       : 3 x 1 array centre [m]
+%   is_bbe_pattern : (optional, default true) back-baffled element pattern,
+%                    g = 1 for u_x > 0 (front half-space) and 0 otherwise;
+%                    false gives an isotropic element (g = 1)
+%
+% Output
+%   array          : N_ant x (N_azi*N_ele), azimuth index varying fastest
 
     if nargin < 7
-        is_bbe_pattern = true; % default behavior
+        is_bbe_pattern = true; % default: back-baffled element
     end
 
     % Constants
@@ -32,7 +52,7 @@ function array = func_get_array_response(N_ant, d, azi, ele, lambda, position, i
 
     % Back-Baffled Element Pattern
     if is_bbe_pattern
-        % Equivalent to -90 < azi < 90
+        % front half-space u_x > 0 (-90 < azi < 90 for 0 < ele < 180)
         g = double(ux > 0);   % 1 x N_points
     else
         g = ones(1, size(U,2)); % no attenuation

@@ -1,34 +1,56 @@
-% MAIN5B_SENSING_ANALYSIS  —  Waveform-parameter RMSE sweeps (companion to main5)
+% MAIN5A_SENSING_SWEEP  —  Waveform-parameter RMSE sweeps
 % -------------------------------------------------------------------------
-% Reference: main5_sensing_analysis.m (same scene overrides, same estimator,
-% same bootstrap-CI machinery). This driver ADDS TWO FIGURES:
+% Estimation RMSE of the conventional sensing chain vs. SNR_Tx for several
+% waveform lengths. Uses the sensing scene overrides of main1
+% (sensing_statistics_cfg), the sinc read-out and a percentile-bootstrap CI on
+% the RMSE. Detection statistics (P_d, P_fa) are in main5b_detection_vs_nbit;
+% this script evaluates estimation only. Two sweeps, one figure each:
 %
 %   Figure A   fig_rmse_range_vs_snr_nchip_sweep
 %       Numerical range RMSE vs SNR for N_chip = [64 128 256 512] with
-%       N_prbs (= N_block in the code) FIXED at the config value.
+%       N_prbs (= N_block in the code) and T_prbs FIXED at the config values.
+%       T_chip = T_prbs/N_chip and B = 1/T_chip, so only the range
+%       resolution c/(2B) changes; the unambiguous range c*T_prbs/2 and the
+%       velocity resolution stay fixed. P_tx is set from the noise power at
+%       the config bandwidth, so the SNR axis is the SNR at that bandwidth and
+%       the matched-filter output SNR P_tx*T_prbs/(k*T_ref*N_F_sen) is the
+%       same for every N_chip.
 %
 %   Figure B   fig_rmse_vel_vs_snr_nprbs_sweep
 %       Numerical velocity RMSE vs SNR for N_prbs (= N_block) =
 %       [64 128 256 512] with N_chip FIXED at the config value.
 %
-% Each sweep line is drawn in the style of fig_bias_significance_vs_snr in
-% main5: a bootstrap 95% confidence band (lo, hi) as a shaded fill plus the
-% empirical mid line, one (band + line) per N_chip / N_prbs value.
+% Each sweep line is drawn as a bootstrap 95% confidence band (lo, hi), shown as
+% a shaded fill, plus the empirical mid line, one (band + line) per N_chip / N_prbs value.
+% Two chains per trial (same scene, noise and Monte-Carlo run, from main4):
+%   data   : RD_map_shifted               (data-carrying PRBS, solid)
+%   nodata : RD_map_noise_no_data_shifted (data-free MLS, dashed, same colour)
 %
-% "Numerical RMSE" = the CONVENTIONAL sensing pipeline of the paper:
-% matched filter -> RD map (main4) -> CA-CFAR detection -> sinc
-% interpolation -> nearest-truth association, exactly as in main5's CFAR
-% branch. Residuals are pooled across the N_tars targets per SNR; missed
-% detections give NaN residuals and are omitted from the bootstrap.
+% "Numerical RMSE" = estimation stage of the conventional pipeline:
+% matched filter -> RD map (main4) -> windowed peak search -> sinc
+% interpolation. Target m owns a fixed window of +-WIN bins in range and
+% Doppler around its true cell (the truth only places the window); its
+% estimate is the strongest cell of that window, with no CFAR threshold.
+% One-to-one: targets are served in decreasing order of their window peak
+% and a cell taken by one target is excluded for the others. A CFAR
+% detection of target m is the local maximum of a +-(N_g+N_t) window, so it
+% is also the strongest cell of the +-WIN window: detected targets keep
+% their detection, and a missed target takes the strongest remaining peak
+% near it. Every target has an estimate in every trial (no NaN), so the
+% RMSE is unconditional; at low SNR it saturates near (2*WIN+1)*Delta/sqrt(12).
 %
 % Outputs (fig_exported / exported_statistics):
 %   fig_rmse_range_vs_snr_nchip_sweep.(fig|png)
 %   fig_rmse_vel_vs_snr_nprbs_sweep.(fig|png)
-%   statistics_sensing_sweep_nchip.csv
-%   statistics_sensing_sweep_nprbs.csv
+%   statistics_sensing_sweep_nchip.csv   (RMSE CI per N_chip, SNR; data + *_nodata columns)
+%   statistics_sensing_sweep_nprbs.csv   (RMSE CI per N_prbs, SNR; data + *_nodata columns)
 %
-% NOTE: long Monte-Carlo sweep (numel(sweep) x numel(SNR) x Mc full scene
-% simulations per figure); run standalone.
+% The two CSVs are read by main8_main (STEP 6c figures, STEP 6h table).
+%
+% Run standalone: main5a_sensing_sweep. Calls main2_topology (which runs
+% main1_matlab_config), main3_signal_channel_model, main4_sensing_process and
+% func_sinc_interpolation. Long Monte-Carlo sweep (numel(sweep) x numel(SNR) x Mc
+% full scene simulations per figure, Mc set below).
 
 clear; clc; close all;
 
@@ -44,7 +66,7 @@ NO_CFAR_PLOT   = true;
 rng("default");
 
 % =====================================================================
-%  Scene + system setup (identical to main5_sensing_analysis)
+%  Scene + system setup
 % =====================================================================
 TOPO_NO_PLOT = true; main2_topology;
 UE_position = sensing_statistics_cfg.scene_override.ue_position_m(:);
@@ -63,9 +85,9 @@ N_F_com = 10^(N_F_com_db/10);
 Noise_power_com = physconst('Boltzmann')*T_ref*N_F_com*B;
 SNR_Tx_db = sensing_statistics_cfg.snr_db(:).';
 SNR_Tx = 10.^(SNR_Tx_db / 10);
-Mc = sensing_statistics_cfg.monte_carlo;
+Mc = 50;   % Monte-Carlo runs per (sweep value, SNR); overrides sensing_statistics_cfg.monte_carlo
 
-% Ground truth (fixed initial geometry, as in main5)
+% Ground truth (fixed initial geometry)
 truth_range = sqrt(sum((Tars_position - Tx_position).^2, 1)).';
 unit_vec    = (Tars_position - Tx_position) ./ ...
               (sqrt(sum((Tars_position - Tx_position).^2, 1)) + eps);
@@ -76,12 +98,17 @@ truth_vel   = sum(Tars_vel .* unit_vec, 1).';
 % =====================================================================
 N_chip_fix   = N_chip;     % config value (fixed during Sweep B)
 N_block_fix  = N_block;    % config value = N_prbs (fixed during Sweep A)
+T_chip_fix    = T_chip;                  % config chip duration (= 1/B)
+B_fix         = B;                       % config bandwidth
+Noise_sen_fix = Noise_power_sen;         % sensing noise power at the config bandwidth
+T_prbs_fix    = N_chip_fix * T_chip_fix; % PRBS duration, fixed during Sweep A
 
 N_chip_sweep  = [64 128 256 512];   % Figure A (range RMSE)
 N_prbs_sweep  = [64 128 256 512];   % Figure B (velocity RMSE), N_prbs = N_block
 
+WIN      = 1;              % half-width of each target's search window, bins (range and Doppler)
 n_boot   = 2000;
-alpha_ci = 0.05;           % 95% CI, as fig_bias_significance_vs_snr
+alpha_ci = 0.05;           % 95% CI
 
 n_snr = numel(SNR_Tx);
 
@@ -91,12 +118,15 @@ n_snr = numel(SNR_Tx);
 rmse_R_lo_A  = nan(n_snr, numel(N_chip_sweep));
 rmse_R_hi_A  = nan(n_snr, numel(N_chip_sweep));
 rmse_R_mid_A = nan(n_snr, numel(N_chip_sweep));
+rmse_R_lo_A_nd  = nan(n_snr, numel(N_chip_sweep));   % no-data chain
+rmse_R_hi_A_nd  = nan(n_snr, numel(N_chip_sweep));
+rmse_R_mid_A_nd = nan(n_snr, numel(N_chip_sweep));
 
 fprintf('===== Sweep A: N_chip in [%s], N_prbs = %d fixed =====\n', ...
     num2str(N_chip_sweep), N_block_fix);
 
 for idx_cfg = 1:numel(N_chip_sweep)
-    % ---- override the waveform length + its derived timing constants ----
+    % ---- fixed T_prbs: T_chip = T_prbs/N_chip, B = 1/T_chip ----
     N_chip  = N_chip_sweep(idx_cfg);
     N_block = N_block_fix;
     if mod(N_chip, 2 * N_sym_per_block) ~= 0
@@ -104,15 +134,20 @@ for idx_cfg = 1:numel(N_chip_sweep)
             "N_chip = %d must be divisible by 2*N_sym_per_block = %d.", ...
             N_chip, 2 * N_sym_per_block);
     end
-    T_pmcw         = N_chip * T_chip;
-    L_slot_per_sym = N_chip / (2 * N_sym_per_block);
-    N_slot         = N_chip / L_slot_per_sym;
+    T_chip          = T_prbs_fix / N_chip;
+    B               = 1 / T_chip;
+    Noise_power_sen = physconst('Boltzmann') * T_ref * N_F_sen * B;  % receiver noise at the new bandwidth
+    T_pmcw          = T_prbs_fix;
+    L_slot_per_sym  = N_chip / (2 * N_sym_per_block);
+    N_slot          = N_chip / L_slot_per_sym;
 
-    err_R_store = cell(n_snr, 1);   % pooled CFAR+sinc range residuals per SNR
+    err_R_store    = cell(n_snr, 1);   % pooled range residuals per SNR, data
+    err_R_store_nd = cell(n_snr, 1);   % same, no data
 
     for idx_snr = 1:n_snr
-        P_tx = Noise_power_sen * SNR_Tx(idx_snr);
+        P_tx = Noise_sen_fix * SNR_Tx(idx_snr);   % SNR defined at the config bandwidth
         all_err_R_cfar = nan(Mc, N_tars);
+        all_err_R_nd   = nan(Mc, N_tars);
 
         for idx_mc = 1:Mc
             main3_signal_channel_model;
@@ -125,41 +160,38 @@ for idx_cfg = 1:numel(N_chip_sweep)
             fd_axis    = (-N_block/2 : N_block/2-1) * (PRF / N_block);
             vel_axis   = -(Lambda / 2) * fd_axis;
 
-            % CA-CFAR detection + sinc interpolation (conventional pipeline)
-            [~, ~, detected_positions, ~] = func_ca_cfar_adaptive_threshold( ...
-                RD_map_shifted, ...
-                N_guard_range, N_guard_doppler, ...
-                N_train_range, N_train_doppler, ...
-                P_fa, peak_select);
+            % windowed one-to-one peak search on the CURRENT grid + sinc read-out
+            peak_pos = local_window_peaks(RD_map_shifted, truth_range, truth_vel, ...
+                                          range_res, vel_axis, WIN);
+            [det_range, det_vel] = func_sinc_interpolation( ...
+                RD_map_shifted, peak_pos, range_axis, vel_axis);
+            all_err_R_cfar(idx_mc, :) = det_range - truth_range;
 
-            err_R_vec = nan(N_tars, 1);
-            K_det = size(detected_positions, 1);
-            if K_det > 0
-                [det_range, det_vel] = func_sinc_interpolation( ...
-                    RD_map_shifted, detected_positions, range_axis, vel_axis);
-                range_span = max(diff(Region_of_interest(1, :)), eps);
-                vel_span   = max(diff(Region_of_interest(2, :)), eps);
-                for j = 1:N_tars
-                    dist2 = ((det_range - truth_range(j)) / range_span).^2 + ...
-                            ((det_vel   - truth_vel(j)  ) / vel_span  ).^2;
-                    [~, jj] = min(dist2);
-                    err_R_vec(j) = det_range(jj) - truth_range(j);
-                end
-            end
-            all_err_R_cfar(idx_mc, :) = err_R_vec;
+            % same estimator on the no-data map
+            peak_pos = local_window_peaks(RD_map_noise_no_data_shifted, truth_range, truth_vel, ...
+                                          range_res, vel_axis, WIN);
+            [det_range, ~] = func_sinc_interpolation( ...
+                RD_map_noise_no_data_shifted, peak_pos, range_axis, vel_axis);
+            all_err_R_nd(idx_mc, :) = det_range - truth_range;
         end
 
-        err_R_store{idx_snr} = all_err_R_cfar;
-        fprintf('  N_chip=%4d | SNR=%+3d dB | RMSE_R = %.4f m\n', ...
-            N_chip, SNR_Tx_db(idx_snr), ...
-            sqrt(mean(all_err_R_cfar(:).^2, 'omitnan')));
+        err_R_store{idx_snr}    = all_err_R_cfar;
+        err_R_store_nd{idx_snr} = all_err_R_nd;
+        fprintf('  N_chip=%4d (B=%6.2f MHz) | SNR=%+3d dB | RMSE_R data / nodata = %.4f / %.4f m\n', ...
+            N_chip, B/1e6, SNR_Tx_db(idx_snr), ...
+            sqrt(mean(all_err_R_cfar(:).^2)), sqrt(mean(all_err_R_nd(:).^2)));
     end
 
-    rng(1);  % reproducible bootstrap (same convention as main5)
+    rng(1);  % reproducible bootstrap
     [lo, hi, mid] = local_bootstrap_rmse_ci(err_R_store, n_boot, alpha_ci);
     rmse_R_lo_A(:, idx_cfg)  = lo;
     rmse_R_hi_A(:, idx_cfg)  = hi;
     rmse_R_mid_A(:, idx_cfg) = mid;
+    rng(1);
+    [lo, hi, mid] = local_bootstrap_rmse_ci(err_R_store_nd, n_boot, alpha_ci);
+    rmse_R_lo_A_nd(:, idx_cfg)  = lo;
+    rmse_R_hi_A_nd(:, idx_cfg)  = hi;
+    rmse_R_mid_A_nd(:, idx_cfg) = mid;
 end
 
 % =====================================================================
@@ -168,10 +200,16 @@ end
 rmse_v_lo_B  = nan(n_snr, numel(N_prbs_sweep));
 rmse_v_hi_B  = nan(n_snr, numel(N_prbs_sweep));
 rmse_v_mid_B = nan(n_snr, numel(N_prbs_sweep));
+rmse_v_lo_B_nd  = nan(n_snr, numel(N_prbs_sweep));   % no-data chain
+rmse_v_hi_B_nd  = nan(n_snr, numel(N_prbs_sweep));
+rmse_v_mid_B_nd = nan(n_snr, numel(N_prbs_sweep));
 
-% restore the fixed chip length + its derived timing constants
-N_chip         = N_chip_fix;
-T_pmcw         = N_chip * T_chip;
+% restore the config chip length, chip duration, bandwidth and noise power
+N_chip          = N_chip_fix;
+T_chip          = T_chip_fix;
+B               = B_fix;
+Noise_power_sen = Noise_sen_fix;
+T_pmcw          = N_chip * T_chip;
 L_slot_per_sym = N_chip / (2 * N_sym_per_block);
 N_slot         = N_chip / L_slot_per_sym;
 
@@ -181,11 +219,13 @@ fprintf('===== Sweep B: N_prbs (N_block) in [%s], N_chip = %d fixed =====\n', ..
 for idx_cfg = 1:numel(N_prbs_sweep)
     N_block = N_prbs_sweep(idx_cfg);
 
-    err_v_store = cell(n_snr, 1);   % pooled CFAR+sinc velocity residuals per SNR
+    err_v_store    = cell(n_snr, 1);   % pooled velocity residuals per SNR, data
+    err_v_store_nd = cell(n_snr, 1);   % same, no data
 
     for idx_snr = 1:n_snr
-        P_tx = Noise_power_sen * SNR_Tx(idx_snr);
+        P_tx = Noise_sen_fix * SNR_Tx(idx_snr);   % SNR defined at the config bandwidth
         all_err_v_cfar = nan(Mc, N_tars);
+        all_err_v_nd   = nan(Mc, N_tars);
 
         for idx_mc = 1:Mc
             main3_signal_channel_model;
@@ -198,41 +238,38 @@ for idx_cfg = 1:numel(N_prbs_sweep)
             fd_axis    = (-N_block/2 : N_block/2-1) * (PRF / N_block);
             vel_axis   = -(Lambda / 2) * fd_axis;
 
-            % CA-CFAR detection + sinc interpolation (conventional pipeline)
-            [~, ~, detected_positions, ~] = func_ca_cfar_adaptive_threshold( ...
-                RD_map_shifted, ...
-                N_guard_range, N_guard_doppler, ...
-                N_train_range, N_train_doppler, ...
-                P_fa, peak_select);
+            % windowed one-to-one peak search on the CURRENT grid + sinc read-out
+            peak_pos = local_window_peaks(RD_map_shifted, truth_range, truth_vel, ...
+                                          range_res, vel_axis, WIN);
+            [det_range, det_vel] = func_sinc_interpolation( ...
+                RD_map_shifted, peak_pos, range_axis, vel_axis);
+            all_err_v_cfar(idx_mc, :) = det_vel - truth_vel;
 
-            err_v_vec = nan(N_tars, 1);
-            K_det = size(detected_positions, 1);
-            if K_det > 0
-                [det_range, det_vel] = func_sinc_interpolation( ...
-                    RD_map_shifted, detected_positions, range_axis, vel_axis);
-                range_span = max(diff(Region_of_interest(1, :)), eps);
-                vel_span   = max(diff(Region_of_interest(2, :)), eps);
-                for j = 1:N_tars
-                    dist2 = ((det_range - truth_range(j)) / range_span).^2 + ...
-                            ((det_vel   - truth_vel(j)  ) / vel_span  ).^2;
-                    [~, jj] = min(dist2);
-                    err_v_vec(j) = det_vel(jj) - truth_vel(j);
-                end
-            end
-            all_err_v_cfar(idx_mc, :) = err_v_vec;
+            % same estimator on the no-data map
+            peak_pos = local_window_peaks(RD_map_noise_no_data_shifted, truth_range, truth_vel, ...
+                                          range_res, vel_axis, WIN);
+            [~, det_vel] = func_sinc_interpolation( ...
+                RD_map_noise_no_data_shifted, peak_pos, range_axis, vel_axis);
+            all_err_v_nd(idx_mc, :) = det_vel - truth_vel;
         end
 
-        err_v_store{idx_snr} = all_err_v_cfar;
-        fprintf('  N_prbs=%4d | SNR=%+3d dB | RMSE_v = %.4f m/s\n', ...
+        err_v_store{idx_snr}    = all_err_v_cfar;
+        err_v_store_nd{idx_snr} = all_err_v_nd;
+        fprintf('  N_prbs=%4d | SNR=%+3d dB | RMSE_v data / nodata = %.4f / %.4f m/s\n', ...
             N_block, SNR_Tx_db(idx_snr), ...
-            sqrt(mean(all_err_v_cfar(:).^2, 'omitnan')));
+            sqrt(mean(all_err_v_cfar(:).^2)), sqrt(mean(all_err_v_nd(:).^2)));
     end
 
-    rng(1);  % reproducible bootstrap (same convention as main5)
+    rng(1);  % reproducible bootstrap
     [lo, hi, mid] = local_bootstrap_rmse_ci(err_v_store, n_boot, alpha_ci);
     rmse_v_lo_B(:, idx_cfg)  = lo;
     rmse_v_hi_B(:, idx_cfg)  = hi;
     rmse_v_mid_B(:, idx_cfg) = mid;
+    rng(1);
+    [lo, hi, mid] = local_bootstrap_rmse_ci(err_v_store_nd, n_boot, alpha_ci);
+    rmse_v_lo_B_nd(:, idx_cfg)  = lo;
+    rmse_v_hi_B_nd(:, idx_cfg)  = hi;
+    rmse_v_mid_B_nd(:, idx_cfg) = mid;
 end
 
 % restore the fixed block count for anything run after this script
@@ -243,17 +280,23 @@ N_block = N_block_fix;
 % =====================================================================
 tbl_A = local_sweep_table('N_chip', N_chip_sweep, SNR_Tx_db, ...
     rmse_R_lo_A, rmse_R_mid_A, rmse_R_hi_A, 'RMSE_Range_m');
+tbl_A_nd = local_sweep_table('N_chip', N_chip_sweep, SNR_Tx_db, ...
+    rmse_R_lo_A_nd, rmse_R_mid_A_nd, rmse_R_hi_A_nd, 'RMSE_Range_m_nodata');
+tbl_A = [tbl_A, tbl_A_nd(:, 3:end)];
 writetable(tbl_A, fullfile(stat_dir, 'statistics_sensing_sweep_nchip.csv'));
 
 tbl_B = local_sweep_table('N_prbs', N_prbs_sweep, SNR_Tx_db, ...
     rmse_v_lo_B, rmse_v_mid_B, rmse_v_hi_B, 'RMSE_Vel_mps');
+tbl_B_nd = local_sweep_table('N_prbs', N_prbs_sweep, SNR_Tx_db, ...
+    rmse_v_lo_B_nd, rmse_v_mid_B_nd, rmse_v_hi_B_nd, 'RMSE_Vel_mps_nodata');
+tbl_B = [tbl_B, tbl_B_nd(:, 3:end)];
 writetable(tbl_B, fullfile(stat_dir, 'statistics_sensing_sweep_nprbs.csv'));
 
 fprintf('\nSweep statistics saved to %s\n', stat_dir);
 
 % =====================================================================
 %  FIGURE A — Range RMSE vs SNR, one (lo, mid, hi) band per N_chip
-%  Style: fig_bias_significance_vs_snr (95%% CI fill + mid line)
+%  Style: 95% CI fill + mid line; no-data chain dashed, same colour
 % =====================================================================
 c_lines = [0.00 0.45 0.74;   % blue
            0.85 0.33 0.10;   % orange
@@ -276,13 +319,23 @@ for idx_cfg = 1:numel(N_chip_sweep)
     plot(x, rmse_R_mid_A(:, idx_cfg), ['-' markers{idx_cfg}], ...
         'LineWidth', 2.0, 'Color', ci, 'MarkerFaceColor', ci, ...
         'DisplayName', sprintf('$N_{\\rm chip} = %d$', N_chip_sweep(idx_cfg)));
+    % no-data chain: same colour, dashed line, lighter band
+    lo = rmse_R_lo_A_nd(:, idx_cfg);
+    hi = rmse_R_hi_A_nd(:, idx_cfg);
+    vd = ~isnan(lo) & ~isnan(hi);
+    fill([x(vd); flipud(x(vd))], [lo(vd); flipud(hi(vd))], ci, ...
+        'FaceAlpha', 0.12, 'EdgeColor', 'none', 'HandleVisibility', 'off');
+    plot(x, rmse_R_mid_A_nd(:, idx_cfg), ['--' markers{idx_cfg}], ...
+        'LineWidth', 1.6, 'Color', ci, 'MarkerFaceColor', 'w', 'HandleVisibility', 'off');
 end
+plot(nan, nan, 'k-',  'LineWidth', 2.0, 'DisplayName', 'With data');
+plot(nan, nan, 'k--', 'LineWidth', 1.6, 'DisplayName', 'Without data');
 set(gca, 'YScale', 'log');
 grid on; box on;
 xlabel('SNR (dB)');
 ylabel('RMSE range (m)');
-title(sprintf('Numerical Range RMSE vs SNR ($N_{\\rm prbs} = %d$ fixed, 95\\%% CI bands)', ...
-    N_block_fix), 'Interpreter','latex');
+title(sprintf('Numerical Range RMSE vs SNR ($N_{\\rm prbs} = %d$, $T_{\\rm prbs} = %.2f\\,\\mu$s fixed, 95\\%% CI bands)', ...
+    N_block_fix, T_prbs_fix*1e6), 'Interpreter','latex');
 legend('Location','best', 'Interpreter','latex');
 
 savefig(fig_nchip, fullfile(fig_dir,'fig_rmse_range_vs_snr_nchip_sweep.fig'));
@@ -304,7 +357,17 @@ for idx_cfg = 1:numel(N_prbs_sweep)
     plot(x, rmse_v_mid_B(:, idx_cfg), ['-' markers{idx_cfg}], ...
         'LineWidth', 2.0, 'Color', ci, 'MarkerFaceColor', ci, ...
         'DisplayName', sprintf('$N_{\\rm prbs} = %d$', N_prbs_sweep(idx_cfg)));
+    % no-data chain: same colour, dashed line, lighter band
+    lo = rmse_v_lo_B_nd(:, idx_cfg);
+    hi = rmse_v_hi_B_nd(:, idx_cfg);
+    vd = ~isnan(lo) & ~isnan(hi);
+    fill([x(vd); flipud(x(vd))], [lo(vd); flipud(hi(vd))], ci, ...
+        'FaceAlpha', 0.12, 'EdgeColor', 'none', 'HandleVisibility', 'off');
+    plot(x, rmse_v_mid_B_nd(:, idx_cfg), ['--' markers{idx_cfg}], ...
+        'LineWidth', 1.6, 'Color', ci, 'MarkerFaceColor', 'w', 'HandleVisibility', 'off');
 end
+plot(nan, nan, 'k-',  'LineWidth', 2.0, 'DisplayName', 'With data');
+plot(nan, nan, 'k--', 'LineWidth', 1.6, 'DisplayName', 'Without data');
 set(gca, 'YScale', 'log');
 grid on; box on;
 xlabel('SNR (dB)');
@@ -322,7 +385,7 @@ fprintf('Figures saved to %s\n', fig_dir);
 function [lo, hi, mid] = local_bootstrap_rmse_ci(err_store, n_boot, alpha_ci)
 % Percentile bootstrap CI on the RMSE statistic, pooling trials across
 % targets at each SNR point in err_store (a cell array, one Mc x N_tars
-% error matrix per SNR). Identical to the helper in main5_sensing_analysis.
+% error matrix per SNR).
     n_snr = numel(err_store);
     lo  = nan(n_snr, 1);
     hi  = nan(n_snr, 1);
@@ -369,4 +432,35 @@ function tbl = local_sweep_table(param_name, param_vals, snr_db, lo, mid, hi, me
     tbl = table(P, S, L, M, H, 'VariableNames', ...
         {param_name, 'SNR_dB', [metric_name '_CI_lo'], ...
          [metric_name '_mid'], [metric_name '_CI_hi']});
+end
+
+function peak_pos = local_window_peaks(RD, truth_range, truth_vel, range_res, vel_axis, win)
+% Windowed one-to-one peak search. True cell of target m: k = round(r_m/range_res)+1
+% (range_axis starts at 0) and the Doppler column whose velocity is closest
+% to v_m. Window W_m = [k-win, k+win] x [d-win, d+win] (clipped to the map).
+% Targets are served in decreasing order of their window peak power; each
+% takes the strongest cell of its window not already taken by another target.
+% peak_pos(m,:) = [range_bin, doppler_bin] of the estimate of target m.
+    P = abs(RD).^2;
+    [N_r, N_d] = size(P);
+    N = numel(truth_range);
+    k_true = round(truth_range(:) / range_res) + 1;
+    [~, d_true] = min(abs(vel_axis(:).' - truth_vel(:)), [], 2);
+    rr = cell(N, 1);  dd = cell(N, 1);  pk = zeros(N, 1);
+    for m = 1:N
+        rr{m} = max(1, k_true(m)-win) : min(N_r, k_true(m)+win);
+        dd{m} = max(1, d_true(m)-win) : min(N_d, d_true(m)+win);
+        pk(m) = max(P(rr{m}, dd{m}), [], 'all');
+    end
+    [~, order] = sort(pk, 'descend');
+    taken = false(N_r, N_d);
+    peak_pos = zeros(N, 2);
+    for m = order.'
+        Pw = P(rr{m}, dd{m});
+        Pw(taken(rr{m}, dd{m})) = -Inf;
+        [~, idx] = max(Pw(:));
+        [ir, id] = ind2sub(size(Pw), idx);
+        peak_pos(m, :) = [rr{m}(ir), dd{m}(id)];
+        taken(peak_pos(m,1), peak_pos(m,2)) = true;
+    end
 end

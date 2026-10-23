@@ -2,28 +2,22 @@ import torch
 import torch.nn as nn
 import torch.nn.init as init
 
-# from models.utils import weights_init_kaiming
-
 
 class DnCNN(nn.Module):
     def __init__(self, depth=20, n_filters=64, kernel_size=3, img_channels=3):
-        """Pytorch implementation of DnCNN.
+        """DnCNN baseline (residual learning: the network predicts the disturbance).
+
         Parameters
         ----------
         depth : int
-            Number of fully convolutional layers in dncnn. In the original paper, the authors have used depth=17 for non-
-            blind denoising and depth=20 for blind denoising.
+            Number of convolutional layers (configs/pdisac_system.json: dncnn_depth).
         n_filters : int
-            Number of filters on each convolutional layer.
-        kernel_size : int tuple
-            2D Tuple specifying the size of the kernel window used to compute activations.
-        n_channels : int
-            Number of image channels that the network processes (1 for grayscale, 3 for RGB)
-        Example
-        -------
-        >>> from OpenDenoising.model.architectures.pytorch import DnCNN
-        >>> dncnn_s = DnCNN(depth=17)
-        >>> dncnn_b = DnCNN(depth=20)
+            Number of filters of each hidden convolutional layer (filters).
+        kernel_size : int
+            Square kernel size (kernel_size).
+        img_channels : int
+            Input / output channels; 2 for the real and imaginary parts of an RD map
+            (image_channels).
         """
         super(DnCNN, self).__init__()
         layers = [

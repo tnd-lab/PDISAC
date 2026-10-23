@@ -1,131 +1,89 @@
-function [RD_map_denoised_inference, metadata_inference] = inference_run_pdnet( ...
-    RD_map_input_inference, checkpoint_inference, options_inference)
-%INFERENCE_RUN_RDPDNET Run trained Python RDPDNet and return a complex RD map.
+function [RD_den, meta] = inference_run_pdnet(RD_in, options)
+%INFERENCE_RUN_PDNET  Denoise RD maps with the models of alg_pdisac/configs/inference.json.
 %
-% The RDPDNet inference dataset may be H-by-W or B-by-H-by-W. Exchange variable
-% names use the suffix "_inference". Python is launched once per call, so
-% pass a batch for Monte-Carlo evaluation when possible.
+%   [RD_den, meta] = inference_run_pdnet(RD_in)
+%   [RD_den, meta] = inference_run_pdnet(RD_in, Models = "pdnet,dncnn")
 %
-% Example:
-%       "full_training", "fold_1", "checkpoints", "best_checkpoint.pth");
+%   RD_in   complex B x H x W (or H x W), H = N_chip, W = N_block (main4 RD_map_shifted)
+%   RD_den  complex K x B x H x W (or K x H x W), one slice per model, same order as meta.name
+%   meta    .name, .version, .checkpoint (1 x K string), .epoch, .val_nmse (1 x K)
+%
+%   Name-value options:
+%     Models            comma-separated model names; "" (default) = every model of
+%                       inference.json with a checkpoint
+%     PythonExecutable  "" (default) = PDISAC_cfg.inference.python_executable of
+%                       main1_matlab_config; a path not found as given is taken
+%                       relative to RepoRoot
+%     RepoRoot          "" (default) = parent folder of this file's folder
+%     KeepExchangeFiles keep the .mat exchange files (default false)
+%     ExchangeDirectory folder of the exchange files (default tempdir)
+%
+% Which models, their version (pdnet / dncnn) and checkpoints are set in
+% alg_pdisac/configs/inference.json; MATLAB only needs the Python interpreter.
+% Runs alg_pdisac/scripts/infer/denoise_mat.py through system(), once per call;
+% it loads every model once, so pass a batch (e.g. all SNRs of a scene).
 
 arguments
-    RD_map_input_inference {mustBeNumeric, mustBeNonempty}
-    checkpoint_inference (1,1) string
-    options_inference.PythonExecutable (1,1) string = ""
-    options_inference.RepoRoot (1,1) string = ""
-    options_inference.Device (1,1) string {mustBeMember(options_inference.Device, ...
-        ["auto","cpu","cuda","mps"])} = "auto"
-    options_inference.BatchSize (1,1) double {mustBeInteger,mustBePositive} = 8
-    options_inference.TrialID = int64(1)
-    options_inference.KeepExchangeFiles (1,1) logical = false
-    options_inference.ExchangeDirectory (1,1) string = string(tempdir)
+    RD_in {mustBeNumeric, mustBeNonempty}
+    options.Models (1,1) string = ""               % "" = every model of inference.json with a checkpoint
+    options.PythonExecutable (1,1) string = ""
+    options.RepoRoot (1,1) string = ""
+    options.KeepExchangeFiles (1,1) logical = false
+    options.ExchangeDirectory (1,1) string = string(tempdir)
 end
 
-this_file = string(mfilename("fullpath"));
-default_root = string(fileparts(fileparts(this_file)));
-repo_root = options_inference.RepoRoot;
+repo_root = options.RepoRoot;
 if strlength(repo_root) == 0
-    repo_root = default_root;
+    repo_root = string(fileparts(fileparts(mfilename("fullpath"))));
 end
+python_exe = options.PythonExecutable;
+if strlength(python_exe) == 0
+    main1_matlab_config;                            % PDISAC_cfg.inference.python_executable
+    python_exe = string(PDISAC_cfg.inference.python_executable);
+end
+if ~isfile(python_exe), python_exe = fullfile(repo_root, python_exe); end
+script = fullfile(repo_root, "alg_pdisac", "scripts", "infer", "denoise_mat.py");
+must_exist(python_exe, "Python executable");
+must_exist(script, "denoise_mat.py");
 
-main1_matlab_config;  % defines PDISAC_cfg (inference paths/device)
-if strlength(options_inference.Device) == 0
-    options_inference.Device = string(PDISAC_cfg.inference.device);
-end
-
-python_executable = options_inference.PythonExecutable;
-if strlength(python_executable) == 0
-    python_executable = string(PDISAC_cfg.inference.python_executable);
-end
-% Absolute paths (e.g. a conda env interpreter outside the repo) are used
-% as-is; repo-relative paths are resolved against the repository root.
-if ~(startsWith(python_executable, filesep) || ...
-     ~isempty(regexp(python_executable, '^[A-Za-z]:[\\/]', 'once')) || ...
-     isfile(python_executable))
-    python_executable = fullfile(repo_root, python_executable);
-end
-inference_script = fullfile(repo_root, "alg_pdisac", "scripts", ...
-    "inference_pdnet_mat.py");
-
-must_exist(python_executable, "Python executable");
-must_exist(inference_script, "RDPDNet inference script");
-must_exist(checkpoint_inference, "RDPDNet checkpoint");
-
-exchange_dir = options_inference.ExchangeDirectory;
-if ~isfolder(exchange_dir)
-    mkdir(exchange_dir);
-end
+if ~isfolder(options.ExchangeDirectory), mkdir(options.ExchangeDirectory); end
 token = string(char(java.util.UUID.randomUUID));
-input_file_inference = fullfile(exchange_dir, ...
-    "dataset_inference_input_" + token + ".mat");
-output_file_inference = fullfile(exchange_dir, ...
-    "dataset_inference_output_" + token + ".mat");
+f_in  = fullfile(options.ExchangeDirectory, "rd_denoise_in_"  + token + ".mat");
+f_out = fullfile(options.ExchangeDirectory, "rd_denoise_out_" + token + ".mat");
+RD_map_input_inference = single(RD_in); %#ok<NASGU>
+save(f_in, "RD_map_input_inference", "-v7");
+cleanup = onCleanup(@() cleanup_files(f_in, f_out, options.KeepExchangeFiles)); %#ok<NASGU>
 
-trial_id_inference = options_inference.TrialID; %#ok<NASGU>
-RD_map_input_inference = single(RD_map_input_inference); %#ok<NASGU>
-save(input_file_inference, "RD_map_input_inference", "trial_id_inference", "-v7");
+cmd = sprintf('"%s" "%s" --input "%s" --output "%s"', python_exe, script, f_in, f_out);
+if strlength(options.Models) > 0, cmd = cmd + " --models " + options.Models; end
+[status, msg] = system(cmd);
+if status ~= 0
+    error("PDISAC:DenoiseFailed", "denoise_mat.py failed (status %d):\n%s", status, msg);
+end
+if ~isfile(f_out), error("PDISAC:DenoiseNoOutput", "denoise_mat.py produced no %s.", f_out); end
 
-cleanup_object = onCleanup(@() cleanup_files(input_file_inference, ...
-    output_file_inference, options_inference.KeepExchangeFiles)); %#ok<NASGU>
-
-alg_dir = fullfile(repo_root, "alg_pdisac");
-old_pythonpath = getenv("PYTHONPATH");
-pythonpath_guard = onCleanup(@() setenv("PYTHONPATH", old_pythonpath)); %#ok<NASGU>
-if strlength(string(old_pythonpath)) == 0
-    setenv("PYTHONPATH", alg_dir);
-else
-    setenv("PYTHONPATH", alg_dir + pathsep + string(old_pythonpath));
+res = load(f_out);
+RD_den = res.RD_map_denoised_inference;
+meta.name       = string(res.model_name_inference);
+meta.version    = string(res.model_version_inference);
+meta.checkpoint = string(res.checkpoint_inference);
+meta.epoch      = res.epoch_inference;
+meta.val_nmse   = res.val_nmse_inference;
+K = numel(meta.name);
+if ~isequal(size(RD_den), [K size(RD_in)]) && ~(K == 1 && isequal(size(RD_den), size(RD_in)))
+    error("PDISAC:DenoiseShape", "denoised size %s, expected %s.", ...
+        mat2str(size(RD_den)), mat2str([K size(RD_in)]));
 end
-
-command = sprintf('"%s" "%s" --checkpoint "%s" --input "%s" --output "%s" --device %s --batch-size %d', ...
-    python_executable, inference_script, checkpoint_inference, ...
-    input_file_inference, output_file_inference, options_inference.Device, ...
-    options_inference.BatchSize);
-[status_inference, message_inference] = system(command);
-if status_inference ~= 0
-    error("PDISAC:RDPDNetInferenceFailed", ...
-        "RDPDNet inference failed with status %d:\n%s", ...
-        status_inference, message_inference);
-end
-if ~isfile(output_file_inference)
-    error("PDISAC:MissingInferenceOutput", ...
-        "Python completed without producing %s.", output_file_inference);
-end
-
-result_inference = load(output_file_inference);
-if ~isfield(result_inference, "RD_map_denoised_inference")
-    error("PDISAC:InvalidInferenceOutput", ...
-        "Output MAT file lacks RD_map_denoised_inference.");
-end
-RD_map_denoised_inference = result_inference.RD_map_denoised_inference;
-metadata_inference = rmfield(result_inference, "RD_map_denoised_inference");
-
-if ~isequal(size(RD_map_denoised_inference), size(RD_map_input_inference))
-    error("PDISAC:InferenceShapeMismatch", ...
-        "RDPDNet output size %s differs from input size %s.", ...
-        mat2str(size(RD_map_denoised_inference)), ...
-        mat2str(size(RD_map_input_inference)));
-end
-if any(~isfinite(RD_map_denoised_inference(:)))
-    error("PDISAC:NonfiniteInferenceOutput", ...
-        "RDPDNet output contains NaN or Inf values.");
-end
+RD_den = reshape(RD_den, [K size(RD_in)]);
 end
 
 
-function must_exist(path_value, description)
-if ~isfile(path_value)
-    error("PDISAC:MissingInferenceDependency", "%s not found: %s", ...
-        description, path_value);
-end
+function must_exist(p, what)
+if ~isfile(p), error("PDISAC:DenoiseMissing", "%s not found: %s", what, p); end
 end
 
-
-function cleanup_files(input_file, output_file, keep_files)
-if keep_files
-    return;
-end
-if isfile(input_file), delete(input_file); end
-if isfile(output_file), delete(output_file); end
+function cleanup_files(f_in, f_out, keep)
+if keep, return; end
+if isfile(f_in),  delete(f_in);  end
+if isfile(f_out), delete(f_out); end
 end

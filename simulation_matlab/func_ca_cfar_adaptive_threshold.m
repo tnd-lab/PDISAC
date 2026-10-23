@@ -1,44 +1,45 @@
 function [threshold_map, noise_avg, detected_positions, RD_power_map] = ...
         func_ca_cfar_adaptive_threshold(RD_map, N_guard_range, N_guard_doppler, ...
                                         N_train_range, N_train_doppler, P_fa, peak_select)
-%FUNC_CA_CFAR_ADAPTIVE_THRESHOLD  2-D Cell-Averaging CFAR detector.
-%   No Image Processing Toolbox required.
+%FUNC_CA_CFAR_ADAPTIVE_THRESHOLD  2-D cell-averaging CFAR (CA-CFAR) detector on an RD map.
+%   [threshold_map, noise_avg, detected_positions, RD_power_map] = ...
+%       func_ca_cfar_adaptive_threshold(RD_map, N_guard_range, N_guard_doppler, ...
+%                                       N_train_range, N_train_doppler, P_fa, peak_select)
 %
-% ── CFAR window (one side) ───────────────────────────────────────────────────
+%   CA-CFAR of Sec. III on the cell powers |RD_map|^2. No Image Processing
+%   Toolbox required.
 %
-%  |← N_train →|← N_guard →| CUT |← N_guard →|← N_train →|
+%   CFAR window (per dimension, each side of the cell under test, CUT):
 %
-%  Training cells (■): estimate local noise/clutter floor.
-%  Guard cells    (□): prevent target energy leaking into noise estimate.
-%  CUT               : cell under test.
+%     |<- N_train ->|<- N_guard ->| CUT |<- N_guard ->|<- N_train ->|
 %
-% ── Threshold formula ────────────────────────────────────────────────────────
+%     Training cells: estimate the local noise/clutter floor.
+%     Guard cells:    keep the target energy out of that estimate.
 %
-%  For N_eff training cells available at each CUT (fewer at edges):
-%    alpha(r,d) = N_eff(r,d) * ( P_fa^(−1/N_eff(r,d)) − 1 )
-%    threshold(r,d) = alpha(r,d) * noise_avg(r,d)
+%   Threshold: with N_eff(r,d) training cells available at each CUT (fewer at
+%   the map edges, where the window is clipped),
+%     alpha(r,d)     = N_eff(r,d) * ( P_fa^(-1/N_eff(r,d)) - 1 )
+%     threshold(r,d) = alpha(r,d) * noise_avg(r,d)
+%   alpha is computed for each N_eff, so the design P_fa holds at the edge
+%   cells as well (alpha is non-linear in N_eff). The formula assumes
+%   exponentially distributed cell powers (complex Gaussian noise).
 %
-%  NOTE: alpha is recomputed per-cell so that P_fa is maintained uniformly
-%        across the entire map, including edge cells where fewer training
-%        cells are available.  A linear scaling of a single nominal alpha
-%        is INCORRECT because the formula is non-linear in N.
+%   Inputs
+%     RD_map           (N_range x N_doppler) complex RD map
+%     N_guard_range    guard cells each side, range dimension
+%     N_guard_doppler  guard cells each side, Doppler dimension
+%     N_train_range    training cells each side, range dimension
+%     N_train_doppler  training cells each side, Doppler dimension
+%     P_fa             design probability of false alarm per cell
+%     peak_select      (optional, default true) keep only the detections that are
+%                      the maximum of their (2*(N_guard+N_train)+1)-cell window
+%                      in both dimensions, so one target gives one detection
 %
-% ── Inputs ───────────────────────────────────────────────────────────────────
-%  RD_map          (N_range × N_doppler) complex range-Doppler matrix
-%  N_guard_range   Guard cells each side, range   dimension  (e.g. 2)
-%  N_guard_doppler Guard cells each side, Doppler dimension  (e.g. 2)
-%  N_train_range   Training cells each side, range           (e.g. 8)
-%  N_train_doppler Training cells each side, Doppler         (e.g. 8)
-%  P_fa            Probability of false alarm                (e.g. 1e-3)
-%  peak_select     (optional, default=true) keep only local maxima among
-%                  detections — prevents one target producing multiple hits
-%
-% ── Outputs ──────────────────────────────────────────────────────────────────
-%  threshold_map       (N_range × N_doppler) adaptive threshold surface [power]
-%  detected_positions  (K × 2) [range_bin, doppler_bin], sorted by power
-%  RD_power_map        (N_range × N_doppler) |RD_map|²
-%
-% ── Example ──────────────────────────────────────────────────────────────────
+%   Outputs
+%     threshold_map       (N_range x N_doppler) adaptive threshold [power]
+%     noise_avg           (N_range x N_doppler) mean training-cell power per CUT
+%     detected_positions  (K x 2) [range_bin, doppler_bin], descending power
+%     RD_power_map        (N_range x N_doppler) |RD_map|^2
 
     %% ── Defaults & validation ───────────────────────────────────────────────
     if nargin < 7 || isempty(peak_select), peak_select = true; end
@@ -79,13 +80,11 @@ function [threshold_map, noise_avg, detected_positions, RD_power_map] = ...
     %% ── Per-cell noise average ───────────────────────────────────────────────
     noise_avg = noise_sum ./ max(count_map, 1);   % guard against divide-by-zero
 
-    %% ── Per-cell alpha: CORRECT non-linear recomputation ────────────────────
-    %   Note: alpha(N) = N*(P_fa^(-1/N) - 1) is NOT linear in N.
-    %   Scaling a single nominal alpha linearly does NOT preserve P_fa at
-    %   edge cells.  We must recompute alpha for each unique N_eff value.
-    %
-    %   unique_counts can only take at most a handful of distinct values
-    %   (interior = N_train_nom, edges = smaller counts), so this loop is fast.
+    %% ── Per-cell alpha ───────────────────────────────────────────────────────
+    %   alpha(N) = N*(P_fa^(-1/N) - 1) is computed for each distinct N_eff
+    %   (non-linear in N, so a single nominal alpha cannot be rescaled).
+    %   count_map takes only a few distinct values (interior = N_train_nom,
+    %   smaller counts at the edges), so this loop is fast.
     alpha_map   = zeros(N_range, N_doppler);
     unique_N    = unique(count_map(:));
     for n = unique_N.'
@@ -101,8 +100,9 @@ function [threshold_map, noise_avg, detected_positions, RD_power_map] = ...
     [row_idx, col_idx] = find(RD_power_map > threshold_map);
 
     %% ── Local-maxima peak selection (no toolbox required) ────────────────────
-    %   Discard a detected cell if any neighbour within the guard window has
-    %   strictly higher power — keeps exactly one peak per target blob.
+    %   Discard a detected cell if any cell of its CFAR window (guard + training
+    %   cells, clipped at the map edges) has strictly higher power, so one peak
+    %   is kept per target blob.
     if peak_select && ~isempty(row_idx)
         keep = true(numel(row_idx), 1);
         for k = 1:numel(row_idx)

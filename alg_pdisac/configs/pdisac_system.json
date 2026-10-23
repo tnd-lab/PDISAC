@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "system": {
     "carrier_hz": 7.7e10,
     "bandwidth_hz": 1.5e8
@@ -14,22 +14,27 @@
     "max_target_speed_mps": 30.0
   },
   "machine_learning": {
-    "output_dir": "exps/pdnet_afm",
+    "output_dir": "exps",
     "n_records": null,
     "num_bins": 1,
     "batch_size": 4,
-    "num_workers": 1,
-    "pin_memory": false,
+    "num_workers": 0,
+    "pin_memory": true,
     "device": "cuda",
-    "epochs": 200,
+    "epochs": 50,
     "learning_rate": 0.001,
     "betas": [0.5, 0.999],
     "folds": 5,
+    "folds_run": 1,
     "hidden_channels": 16,
     "latent_levels": 3,
     "mask_weight": 0.1,
     "reconstruction_weight": 1.0,
     "kl_weight": 0.0001,
+    "kl_warmup_epochs": 10,
+    "target_weight": 1.0,
+    "inference_weight": 1.0,
+    "target_loss": "rel",
     "dncnn_depth": 10,
     "image_channels": 2,
     "filters": 64,
@@ -46,6 +51,7 @@
     "epochs": 2,
     "n_splits": 2,
     "device": "cpu",
-    "num_workers": 0
+    "num_workers": 0,
+    "pin_memory": false
   }
 }
